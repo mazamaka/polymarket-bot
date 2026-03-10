@@ -1,16 +1,18 @@
 """Claude AI анализатор рынков предсказаний.
 
-Использует:
-- Extended thinking для глубокого анализа
+Использует Claude Code CLI (подписка Max) вместо прямого API.
+- Haiku для быстрого скрининга, Sonnet для глубокого анализа
+- Параллельные subprocess вызовы для ускорения
 - Web search (DuckDuckGo) для актуальных новостей
 - Real-time цены крипто/акций
 """
 
 import json
 import logging
+import os
+import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-
-import anthropic
 
 from analyzer.prompts import (
     ANALYZE_MARKET_USER,
@@ -25,18 +27,65 @@ from utils.search import search_market_context
 
 logger = logging.getLogger(__name__)
 
+_CLAUDE_ENV: dict[str, str] | None = None
+
+
+def _get_clean_env() -> dict[str, str]:
+    """Env без CLAUDECODE (чтобы не было nested session error)."""
+    global _CLAUDE_ENV
+    if _CLAUDE_ENV is None:
+        _CLAUDE_ENV = os.environ.copy()
+        _CLAUDE_ENV.pop("CLAUDECODE", None)
+    return _CLAUDE_ENV
+
+
+def _call_claude(
+    prompt: str,
+    model: str = "sonnet",
+    timeout: int = 120,
+) -> str:
+    """Вызов Claude через CLI (использует подписку Claude Code Max)."""
+    cmd = [
+        "claude",
+        "-p",
+        "--output-format",
+        "text",
+        "--model",
+        model,
+        "--permission-mode",
+        "bypassPermissions",
+        "--no-session-persistence",
+    ]
+
+    result = subprocess.run(
+        cmd,
+        input=prompt,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=_get_clean_env(),
+    )
+
+    if result.returncode != 0:
+        logger.error(
+            "Claude CLI error (code %d): %s", result.returncode, result.stderr[:200]
+        )
+        return ""
+
+    return result.stdout.strip()
+
 
 class ClaudeAnalyzer:
-    """Анализирует рынки Polymarket с помощью Claude + Extended Thinking."""
+    """Анализирует рынки Polymarket с помощью Claude Code CLI."""
 
     def __init__(self, use_thinking: bool = True) -> None:
-        self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        self.model = settings.claude_model
+        self.model = "opus"  # глубокий анализ — максимальное качество
+        self.screen_model = "sonnet"  # скрининг — быстро и умно
         self.prices = PriceProvider()
         self.use_thinking = use_thinking
 
     def analyze_market(self, market: Market) -> AIPrediction | None:
-        """Глубокий анализ одного рынка с extended thinking + web search."""
+        """Глубокий анализ одного рынка."""
         yes_price = market.outcome_prices[0] if market.outcome_prices else 0.5
         no_price = (
             market.outcome_prices[1]
@@ -44,7 +93,6 @@ class ClaudeAnalyzer:
             else 1 - yes_price
         )
 
-        # Обогащаем контекст: цены + новости
         price_context = self.prices.enrich_market_context(market.question)
         news_context = search_market_context(market.question, max_results=5)
 
@@ -66,39 +114,12 @@ class ClaudeAnalyzer:
         if news_context:
             user_prompt += "\n\n" + news_context
 
-        try:
-            # Extended thinking для глубокого анализа
-            if self.use_thinking:
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=16000,
-                    thinking={
-                        "type": "enabled",
-                        "budget_tokens": 8000,
-                    },
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": SUPERFORECASTER_SYSTEM + "\n\n" + user_prompt,
-                        },
-                    ],
-                )
-            else:
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=1024,
-                    system=SUPERFORECASTER_SYSTEM,
-                    messages=[{"role": "user", "content": user_prompt}],
-                )
+        full_prompt = SUPERFORECASTER_SYSTEM + "\n\n" + user_prompt
 
-            # Извлекаем текст (пропускаем thinking blocks)
-            content = ""
-            thinking_text = ""
-            for block in response.content:
-                if block.type == "thinking":
-                    thinking_text = block.thinking
-                elif block.type == "text":
-                    content = block.text
+        try:
+            content = _call_claude(full_prompt, model=self.model, timeout=120)
+            if not content:
+                return None
 
             parsed = self._parse_json_response(content)
             if not parsed:
@@ -116,9 +137,6 @@ class ClaudeAnalyzer:
                 recommended_side = "BUY_NO"
 
             reasoning = parsed.get("reasoning", "")
-            # Добавляем ключевые моменты из thinking если есть
-            if thinking_text and len(thinking_text) > 100:
-                reasoning += f" [Thinking: {len(thinking_text)} tokens used]"
 
             prediction = AIPrediction(
                 market_id=market.id,
@@ -133,9 +151,8 @@ class ClaudeAnalyzer:
 
             has_news = " +news" if news_context else ""
             has_prices = " +price" if price_context else ""
-            has_thinking = " +think" if thinking_text else ""
             logger.info(
-                "Анализ: %s | AI: %.0f%% vs Market: %.0f%% | Edge: %+.0f%% | Conf: %.0f%% | %s%s%s%s",
+                "Анализ: %s | AI: %.0f%% vs Market: %.0f%% | Edge: %+.0f%% | Conf: %.0f%% | %s%s%s",
                 market.question[:50],
                 ai_prob * 100,
                 yes_price * 100,
@@ -144,61 +161,65 @@ class ClaudeAnalyzer:
                 recommended_side,
                 has_news,
                 has_prices,
-                has_thinking,
             )
 
             return prediction
 
-        except anthropic.APIError as e:
-            logger.error("Claude API ошибка: %s", e)
+        except subprocess.TimeoutExpired:
+            logger.error("Claude CLI timeout для %s", market.question[:50])
             return None
 
+    def analyze_markets_parallel(
+        self, markets: list[Market], max_workers: int = 3
+    ) -> list[AIPrediction]:
+        """Параллельный анализ нескольких рынков."""
+        predictions: list[AIPrediction] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(self.analyze_market, m): m for m in markets}
+            for future in as_completed(futures):
+                market = futures[future]
+                try:
+                    result = future.result()
+                    if result:
+                        predictions.append(result)
+                except Exception as e:
+                    logger.error("Ошибка анализа %s: %s", market.question[:40], e)
+        return predictions
+
     def batch_screen_markets(
-        self, markets: list[Market], batch_size: int = 20
+        self, markets: list[Market], batch_size: int = 30
     ) -> list[dict]:
-        """Быстрый скрининг рынков батчами (без thinking — экономим токены)."""
+        """Быстрый скрининг рынков батчами (haiku — быстро и дёшево)."""
         interesting: list[dict] = []
 
         for i in range(0, len(markets), batch_size):
             batch = markets[i : i + batch_size]
             markets_text = self._format_markets_for_screening(batch)
-
             user_prompt = BATCH_SCREEN_USER.format(
                 markets_list=markets_text,
                 today=datetime.now().strftime("%Y-%m-%d"),
             )
+            full_prompt = BATCH_SCREEN_SYSTEM + "\n\n" + user_prompt
 
             try:
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=4096,
-                    system=BATCH_SCREEN_SYSTEM,
-                    messages=[{"role": "user", "content": user_prompt}],
+                content = _call_claude(
+                    full_prompt, model=self.screen_model, timeout=120
                 )
-
-                content = response.content[0].text
+                if not content:
+                    continue
                 parsed = self._parse_json_response(content)
                 if parsed and isinstance(parsed, list):
-                    for item in parsed:
-                        if item.get("worth_deeper_analysis"):
-                            interesting.append(item)
-
-                logger.info(
-                    "Скрининг батча %d-%d: %d интересных из %d",
-                    i,
-                    i + len(batch),
-                    len(
-                        [
-                            x
-                            for x in (parsed or [])
-                            if isinstance(x, dict) and x.get("worth_deeper_analysis")
-                        ]
-                    ),
-                    len(batch),
-                )
-
-            except anthropic.APIError as e:
-                logger.error("Claude API ошибка при скрининге: %s", e)
+                    found = [x for x in parsed if x.get("worth_deeper_analysis")]
+                    interesting.extend(found)
+                    logger.info(
+                        "Скрининг батча %d-%d: %d интересных из %d",
+                        i,
+                        i + len(batch),
+                        len(found),
+                        len(batch),
+                    )
+            except subprocess.TimeoutExpired:
+                logger.error("Скрининг батча %d timeout", i)
 
         return interesting
 

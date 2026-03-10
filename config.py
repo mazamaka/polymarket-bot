@@ -19,9 +19,13 @@ class Settings(BaseSettings):
     max_total_exposure_pct: float = 0.30  # 30% общая экспозиция
     min_edge_threshold: float = 0.08  # 8% минимальный edge
     stop_loss_pct: float = 0.30  # -30% stop-loss
-    max_concurrent_positions: int = 10
+    max_concurrent_positions: int = 20
     min_confidence: float = 0.30  # мин. уверенность Claude (paper trading)
-    min_liquidity_usd: float = 5000.0  # мин. ликвидность рынка
+    min_liquidity_usd: float = 500.0  # мин. ликвидность (для paper trading достаточно)
+
+    # Timing
+    max_hours_to_resolution: float = 48.0  # макс. часов до закрытия рынка
+    min_hours_to_resolution: float = 1.0  # мин. часов (слишком близко — опасно)
 
     # Trading
     default_trade_size_usd: float = 5.0  # размер сделки для Фазы 2

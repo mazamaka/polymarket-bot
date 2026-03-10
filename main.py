@@ -150,22 +150,33 @@ def run_paper_trading(max_markets: int = 200, use_thinking: bool = True) -> None
         if not interesting:
             logger.info("Нет новых интересных рынков")
         else:
-            # 4. Анализ и торговля
+            # 4. Параллельный анализ интересных рынков
+            markets_to_analyze = []
             for item in interesting:
                 market_id = item.get("market_id", "")
                 market = next((m for m in tradeable if m.id == market_id), None)
-                if not market:
-                    continue
+                if market:
+                    markets_to_analyze.append(market)
 
-                prediction = analyzer.analyze_market(market)
-                if not prediction:
+            logger.info(
+                "Глубокий анализ %d рынков (параллельно)...", len(markets_to_analyze)
+            )
+            predictions = analyzer.analyze_markets_parallel(
+                markets_to_analyze, max_workers=3
+            )
+
+            # 5. Торговля по результатам
+            for prediction in predictions:
+                market = next(
+                    (m for m in tradeable if m.id == prediction.market_id), None
+                )
+                if not market:
                     continue
 
                 signal = risk_mgr.evaluate_signal(prediction, storage.balance)
                 if not signal:
                     continue
 
-                # Paper execute через storage
                 from polymarket.models import Position
 
                 position = Position(
@@ -176,6 +187,14 @@ def run_paper_trading(max_markets: int = 200, use_thinking: bool = True) -> None
                     size_usd=signal.size_usd,
                     current_price=signal.price,
                     side=signal.prediction.recommended_side,
+                    end_date=market.end_date,
+                    slug=market.slug,
+                    edge=prediction.edge,
+                    confidence=prediction.confidence,
+                    ai_probability=prediction.ai_probability,
+                    reasoning=prediction.reasoning[:300],
+                    volume=market.volume,
+                    liquidity=market.liquidity,
                 )
                 new_balance = storage.balance - signal.size_usd
                 storage.add_position(position, new_balance)
@@ -342,10 +361,6 @@ def main() -> None:
         "--no-thinking", action="store_true", help="Disable extended thinking"
     )
     args = parser.parse_args()
-
-    if not settings.anthropic_api_key and not args.monitor and not args.web:
-        logger.error("ANTHROPIC_API_KEY не установлен! Добавьте в .env")
-        sys.exit(1)
 
     use_thinking = not args.no_thinking
 

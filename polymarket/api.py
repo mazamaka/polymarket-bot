@@ -103,24 +103,51 @@ class PolymarketAPI:
         return None
 
     def filter_tradeable_markets(
-        self, markets: list[Market], min_liquidity: float | None = None
+        self,
+        markets: list[Market],
+        min_liquidity: float | None = None,
+        max_hours: float | None = None,
+        min_hours: float | None = None,
     ) -> list[Market]:
-        """Отфильтровать рынки по ликвидности и активности."""
+        """Отфильтровать рынки по ликвидности, активности и времени до закрытия."""
+        from datetime import datetime, timezone
+
         min_liq = min_liquidity or settings.min_liquidity_usd
+        max_h = max_hours if max_hours is not None else settings.max_hours_to_resolution
+        min_h = min_hours if min_hours is not None else settings.min_hours_to_resolution
+        now = datetime.now(tz=timezone.utc)
+
         tradeable = []
+        skipped_time = 0
         for m in markets:
-            if (
+            if not (
                 m.active
                 and not m.closed
                 and m.liquidity >= min_liq
                 and m.clob_token_ids
             ):
-                tradeable.append(m)
+                continue
+
+            # Фильтр по времени до закрытия
+            if m.end_date:
+                try:
+                    end = datetime.fromisoformat(m.end_date.replace("Z", "+00:00"))
+                    hours_left = (end - now).total_seconds() / 3600
+                    if hours_left < min_h or hours_left > max_h:
+                        skipped_time += 1
+                        continue
+                except (ValueError, TypeError):
+                    pass  # если не можем распарсить — пропускаем фильтр
+
+            tradeable.append(m)
 
         logger.info(
-            "Отфильтровано %d торгуемых рынков (мин. ликвидность: $%.0f)",
+            "Отфильтровано %d торгуемых рынков (liq>$%.0f, %g-%gh до закрытия, пропущено по времени: %d)",
             len(tradeable),
             min_liq,
+            min_h,
+            max_h,
+            skipped_time,
         )
         return tradeable
 

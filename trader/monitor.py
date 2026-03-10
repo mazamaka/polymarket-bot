@@ -27,8 +27,16 @@ def update_positions(storage: PortfolioStorage) -> None:
 
             yes_price = market.outcome_prices[0] if market.outcome_prices else 0.5
 
-            # Обновляем текущую цену
+            # Обновляем текущую цену и метаданные
             pos.current_price = yes_price
+            if market.end_date and not pos.end_date:
+                pos.end_date = market.end_date
+            if market.slug and not pos.slug:
+                pos.slug = market.slug
+            if market.volume and not pos.volume:
+                pos.volume = market.volume
+            if market.liquidity:
+                pos.liquidity = market.liquidity
 
             # P&L расчёт
             if pos.side == "BUY_YES":

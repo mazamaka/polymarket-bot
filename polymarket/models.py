@@ -73,3 +73,12 @@ class Position(BaseModel):
     pnl_pct: float = 0.0
     side: str = "BUY"
     opened_at: datetime = Field(default_factory=datetime.now)
+    # Extended info for dashboard
+    end_date: str = ""
+    slug: str = ""
+    edge: float = 0.0
+    confidence: float = 0.0
+    ai_probability: float = 0.0
+    reasoning: str = ""
+    volume: float = 0.0
+    liquidity: float = 0.0

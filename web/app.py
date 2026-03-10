@@ -171,7 +171,7 @@ def _run_paper_bg() -> None:
 
     _set_status("running", "Paper trading in progress...")
     try:
-        run_paper_trading(max_markets=50, use_thinking=True)
+        run_paper_trading(max_markets=500, use_thinking=True)
         storage = PortfolioStorage()
         sync_broadcast("portfolio", storage.get_summary())
         sync_broadcast("history", list(reversed(storage.history[-30:])))
@@ -185,9 +185,9 @@ def _run_paper_bg_fast() -> None:
     """Быстрый режим для auto-scheduler: больше рынков, без thinking."""
     from main import run_paper_trading
 
-    _set_status("running", "Auto paper trading (200 markets, fast mode)...")
+    _set_status("running", "Auto paper trading (500 markets, short-term)...")
     try:
-        run_paper_trading(max_markets=200, use_thinking=False)
+        run_paper_trading(max_markets=500, use_thinking=False)
         storage = PortfolioStorage()
         sync_broadcast("portfolio", storage.get_summary())
         sync_broadcast("history", list(reversed(storage.history[-30:])))
@@ -210,57 +210,118 @@ def _run_analysis_bg() -> None:
         _set_status("idle", f"Error: {e}")
 
 
-async def _auto_scheduler(interval_min: int = 15) -> None:
-    """Автоматический scheduler: paper trading каждые N минут."""
-    run_count = 0
+async def _price_monitor_loop(interval_sec: int = 180) -> None:
+    """Быстрый мониторинг цен каждые N секунд (без Claude, только Gamma API)."""
     while True:
-        await asyncio.sleep(5)  # небольшая пауза при старте
+        await asyncio.sleep(interval_sec)
+        try:
+            storage = PortfolioStorage()
+            if not storage.positions:
+                continue
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, _monitor_bg_silent)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Price monitor error: %s", e)
+
+
+def _monitor_bg_silent() -> None:
+    """Тихое обновление цен — без смены статуса бота."""
+    from trader.monitor import update_positions
+
+    try:
+        storage = PortfolioStorage()
+        if not storage.positions:
+            return
+        update_positions(storage)
+        sync_broadcast("portfolio", storage.get_summary())
+    except Exception as e:
+        logger.error("Silent monitor error: %s", e)
+
+
+async def _trading_loop(interval_min: int = 15) -> None:
+    """Поиск новых сделок каждые N минут (с Claude API)."""
+    run_count = 0
+    await asyncio.sleep(10)  # пауза при старте
+    while True:
         run_count += 1
-        logger.info("=== AUTO RUN #%d ===", run_count)
-        sync_broadcast("log", f"Auto run #{run_count} started")
+        logger.info("=== TRADING RUN #%d ===", run_count)
+        sync_broadcast("log", f"Trading scan #{run_count} started")
 
         if bot_status["state"] != "idle":
-            logger.info("Skipping auto run — bot is busy: %s", bot_status["state"])
-            await asyncio.sleep(interval_min * 60)
-            continue
+            logger.info("Skipping trading run — bot is busy: %s", bot_status["state"])
+        else:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, _run_paper_bg_fast)
 
-        # Запускаем в thread pool чтобы не блокировать event loop
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, _run_paper_bg_fast)
-
-        logger.info("Next auto run in %d min", interval_min)
-        sync_broadcast("log", f"Next auto run in {interval_min} min")
+        logger.info("Next trading scan in %d min", interval_min)
+        sync_broadcast("log", f"Next trading scan in {interval_min} min")
         await asyncio.sleep(interval_min * 60)
 
 
-_scheduler_task: asyncio.Task | None = None
+_monitor_task: asyncio.Task | None = None
+_trading_task: asyncio.Task | None = None
 
 
 @app.post("/api/scheduler/start")
 async def api_scheduler_start() -> JSONResponse:
-    global _scheduler_task
-    if _scheduler_task and not _scheduler_task.done():
-        return JSONResponse({"status": "already running"})
-    _scheduler_task = asyncio.create_task(_auto_scheduler(15))
-    sync_broadcast("log", "Scheduler started (every 15 min)")
-    return JSONResponse({"status": "scheduler started", "interval": 15})
+    global _monitor_task, _trading_task
+    already_running = []
+    started = []
+
+    if _monitor_task and not _monitor_task.done():
+        already_running.append("monitor")
+    else:
+        _monitor_task = asyncio.create_task(_price_monitor_loop(180))
+        started.append("price monitor (every 3 min)")
+
+    if _trading_task and not _trading_task.done():
+        already_running.append("trading")
+    else:
+        _trading_task = asyncio.create_task(_trading_loop(15))
+        started.append("trading scanner (every 15 min)")
+
+    msg = f"Started: {', '.join(started)}" if started else "Already running"
+    sync_broadcast("log", msg)
+    return JSONResponse(
+        {"status": msg, "monitor_interval": 180, "trading_interval": 15}
+    )
 
 
 @app.post("/api/scheduler/stop")
 async def api_scheduler_stop() -> JSONResponse:
-    global _scheduler_task
-    if _scheduler_task and not _scheduler_task.done():
-        _scheduler_task.cancel()
-        _scheduler_task = None
-        sync_broadcast("log", "Scheduler stopped")
-        return JSONResponse({"status": "scheduler stopped"})
+    global _monitor_task, _trading_task
+    stopped = []
+
+    if _monitor_task and not _monitor_task.done():
+        _monitor_task.cancel()
+        _monitor_task = None
+        stopped.append("price monitor")
+
+    if _trading_task and not _trading_task.done():
+        _trading_task.cancel()
+        _trading_task = None
+        stopped.append("trading scanner")
+
+    if stopped:
+        msg = f"Stopped: {', '.join(stopped)}"
+        sync_broadcast("log", msg)
+        return JSONResponse({"status": msg})
     return JSONResponse({"status": "not running"})
 
 
 @app.get("/api/scheduler/status")
 async def api_scheduler_status() -> JSONResponse:
-    running = _scheduler_task is not None and not _scheduler_task.done()
-    return JSONResponse({"running": running})
+    monitor_running = _monitor_task is not None and not _monitor_task.done()
+    trading_running = _trading_task is not None and not _trading_task.done()
+    return JSONResponse(
+        {
+            "running": monitor_running or trading_running,
+            "monitor": monitor_running,
+            "trading": trading_running,
+        }
+    )
 
 
 def _load_latest_analyses(max_files: int = 3) -> list[dict]:
