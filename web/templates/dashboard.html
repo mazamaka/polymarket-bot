@@ -103,6 +103,7 @@
         <button class="btn" onclick="runMonitor()" id="btn-mon">Update Prices</button>
         <button class="btn btn-go" onclick="runPaper()" id="btn-paper">Run Paper Trading</button>
         <button class="btn" onclick="runAnalysis()" id="btn-analysis">Run Analysis</button>
+        <button class="btn" onclick="toggleScheduler()" id="btn-sched">Start Auto</button>
     </div>
 </div>
 
@@ -365,6 +366,8 @@ function connectWS() {
             updateStatus(msg.data);
         } else if (msg.event === 'analyses') {
             addLog('New analysis available - refresh page to see', 'info');
+        } else if (msg.event === 'log') {
+            addLog(msg.data, 'info');
         }
     };
 
@@ -409,11 +412,46 @@ async function runAnalysis() {
     showToast('Analysis started');
 }
 
+let schedulerRunning = false;
+
+async function toggleScheduler() {
+    const btn = el('btn-sched');
+    if (!schedulerRunning) {
+        const r = await fetch('/api/scheduler/start', {method:'POST'});
+        if (r.ok) {
+            schedulerRunning = true;
+            btn.textContent = 'Stop Auto';
+            btn.classList.add('btn-go');
+            addLog('Auto-scheduler started (every 15 min)', 'trade');
+            showToast('Auto-scheduler started');
+        }
+    } else {
+        await fetch('/api/scheduler/stop', {method:'POST'});
+        schedulerRunning = false;
+        btn.textContent = 'Start Auto';
+        btn.classList.remove('btn-go');
+        addLog('Auto-scheduler stopped', 'info');
+        showToast('Auto-scheduler stopped');
+    }
+}
+
+async function checkScheduler() {
+    const r = await fetch('/api/scheduler/status');
+    const d = await r.json();
+    schedulerRunning = d.running;
+    const btn = el('btn-sched');
+    if (schedulerRunning) {
+        btn.textContent = 'Stop Auto';
+        btn.classList.add('btn-go');
+    }
+}
+
 // ==================== INIT ====================
 renderPositions(initialPositions);
 renderHistory(initialHistory);
 addLog('Dashboard loaded', 'info');
 connectWS();
+checkScheduler();
 </script>
 </body>
 </html>

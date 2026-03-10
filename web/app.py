@@ -33,13 +33,13 @@ bot_status: dict = {"state": "idle", "message": "", "last_run": ""}
 async def broadcast(event: str, data: dict | str = "") -> None:
     """Отправить событие всем подключённым клиентам."""
     msg = json.dumps({"event": event, "data": data, "ts": datetime.now().isoformat()})
-    dead = set()
-    for ws in ws_clients:
+    dead: set[WebSocket] = set()
+    for client in ws_clients:
         try:
-            await ws.send_text(msg)
+            await client.send_text(msg)
         except Exception:
-            dead.add(ws)
-    ws_clients -= dead
+            dead.add(client)
+    ws_clients.difference_update(dead)
 
 
 def sync_broadcast(event: str, data: dict | str = "") -> None:
@@ -181,6 +181,22 @@ def _run_paper_bg() -> None:
         _set_status("idle", f"Error: {e}")
 
 
+def _run_paper_bg_fast() -> None:
+    """Быстрый режим для auto-scheduler: больше рынков, без thinking."""
+    from main import run_paper_trading
+
+    _set_status("running", "Auto paper trading (200 markets, fast mode)...")
+    try:
+        run_paper_trading(max_markets=200, use_thinking=False)
+        storage = PortfolioStorage()
+        sync_broadcast("portfolio", storage.get_summary())
+        sync_broadcast("history", list(reversed(storage.history[-30:])))
+        _set_status("idle", "Auto paper trading completed")
+    except Exception as e:
+        logger.error("Auto paper trading error: %s", e)
+        _set_status("idle", f"Error: {e}")
+
+
 def _run_analysis_bg() -> None:
     from main import run_analysis
 
@@ -192,6 +208,59 @@ def _run_analysis_bg() -> None:
     except Exception as e:
         logger.error("Analysis error: %s", e)
         _set_status("idle", f"Error: {e}")
+
+
+async def _auto_scheduler(interval_min: int = 15) -> None:
+    """Автоматический scheduler: paper trading каждые N минут."""
+    run_count = 0
+    while True:
+        await asyncio.sleep(5)  # небольшая пауза при старте
+        run_count += 1
+        logger.info("=== AUTO RUN #%d ===", run_count)
+        sync_broadcast("log", f"Auto run #{run_count} started")
+
+        if bot_status["state"] != "idle":
+            logger.info("Skipping auto run — bot is busy: %s", bot_status["state"])
+            await asyncio.sleep(interval_min * 60)
+            continue
+
+        # Запускаем в thread pool чтобы не блокировать event loop
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _run_paper_bg_fast)
+
+        logger.info("Next auto run in %d min", interval_min)
+        sync_broadcast("log", f"Next auto run in {interval_min} min")
+        await asyncio.sleep(interval_min * 60)
+
+
+_scheduler_task: asyncio.Task | None = None
+
+
+@app.post("/api/scheduler/start")
+async def api_scheduler_start() -> JSONResponse:
+    global _scheduler_task
+    if _scheduler_task and not _scheduler_task.done():
+        return JSONResponse({"status": "already running"})
+    _scheduler_task = asyncio.create_task(_auto_scheduler(15))
+    sync_broadcast("log", "Scheduler started (every 15 min)")
+    return JSONResponse({"status": "scheduler started", "interval": 15})
+
+
+@app.post("/api/scheduler/stop")
+async def api_scheduler_stop() -> JSONResponse:
+    global _scheduler_task
+    if _scheduler_task and not _scheduler_task.done():
+        _scheduler_task.cancel()
+        _scheduler_task = None
+        sync_broadcast("log", "Scheduler stopped")
+        return JSONResponse({"status": "scheduler stopped"})
+    return JSONResponse({"status": "not running"})
+
+
+@app.get("/api/scheduler/status")
+async def api_scheduler_status() -> JSONResponse:
+    running = _scheduler_task is not None and not _scheduler_task.done()
+    return JSONResponse({"running": running})
 
 
 def _load_latest_analyses(max_files: int = 3) -> list[dict]:
