@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     min_edge_threshold: float = 0.08  # 8% минимальный edge
     stop_loss_pct: float = 0.30  # -30% stop-loss
     max_concurrent_positions: int = 10
-    min_confidence: float = 0.50  # мин. уверенность Claude
+    min_confidence: float = 0.30  # мин. уверенность Claude (paper trading)
     min_liquidity_usd: float = 5000.0  # мин. ликвидность рынка
 
     # Trading

@@ -8,3 +8,4 @@ local_db*/
 dist/
 build/
 results/
+data/
