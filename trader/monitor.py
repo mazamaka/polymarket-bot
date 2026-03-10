@@ -66,6 +66,17 @@ def update_positions(storage: PortfolioStorage) -> None:
                 pos.pnl_pct * 100,
             )
 
+            # Take-profit check
+            if pos.pnl_pct >= settings.take_profit_pct:
+                logger.info(
+                    "TAKE-PROFIT: %s | PnL: %+.1f%%",
+                    pos.question[:40],
+                    pos.pnl_pct * 100,
+                )
+                storage.close_position(pos.market_id, current_token_price)
+                closed_count += 1
+                continue
+
             # Stop-loss check
             if pos.pnl_pct <= -settings.stop_loss_pct:
                 logger.warning(

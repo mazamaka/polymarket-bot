@@ -127,6 +127,11 @@ class ClaudeAnalyzer:
             ai_prob = float(parsed["probability"])
             confidence = float(parsed["confidence"])
             edge = ai_prob - yes_price
+            spread = float(parsed.get("framework_spread", 0))
+
+            # Снижаем confidence при высоком разбросе фреймворков
+            if spread > 0.25 and confidence > 0.4:
+                confidence = min(confidence, 0.35)
 
             if abs(edge) < settings.min_edge_threshold:
                 recommended_side = "SKIP"
@@ -135,7 +140,16 @@ class ClaudeAnalyzer:
             else:
                 recommended_side = "BUY_NO"
 
+            # Собираем reasoning из frameworks + summary
             reasoning = parsed.get("reasoning", "")
+            frameworks = parsed.get("frameworks", {})
+            if frameworks:
+                parts = []
+                for name, data in frameworks.items():
+                    if isinstance(data, dict) and "probability" in data:
+                        parts.append(f"{name}: {data['probability']:.0%}")
+                if parts:
+                    reasoning = f"[{', '.join(parts)}] {reasoning}"
 
             prediction = AIPrediction(
                 market_id=market.id,
@@ -151,12 +165,13 @@ class ClaudeAnalyzer:
             has_news = " +news" if news_context else ""
             has_prices = " +price" if price_context else ""
             logger.info(
-                "Анализ: %s | AI: %.0f%% vs Market: %.0f%% | Edge: %+.0f%% | Conf: %.0f%% | %s%s%s",
+                "Анализ: %s | AI: %.0f%% vs Market: %.0f%% | Edge: %+.0f%% | Conf: %.0f%% | Spread: %.0f%% | %s%s%s",
                 market.question[:50],
                 ai_prob * 100,
                 yes_price * 100,
                 edge * 100,
                 confidence * 100,
+                spread * 100,
                 recommended_side,
                 has_news,
                 has_prices,
@@ -227,9 +242,11 @@ class ClaudeAnalyzer:
         lines = []
         for m in markets:
             yes_price = m.outcome_prices[0] if m.outcome_prices else 0.5
+            vol_liq = m.volume / m.liquidity if m.liquidity > 0 else 0
             line = (
                 f"- ID: {m.id} | Q: {m.question} | YES: {yes_price:.2f} | "
-                f"Vol: ${m.volume:,.0f} | Liq: ${m.liquidity:,.0f} | End: {m.end_date}"
+                f"Vol: ${m.volume:,.0f} | Liq: ${m.liquidity:,.0f} | "
+                f"V/L: {vol_liq:.1f} | End: {m.end_date}"
             )
             price_ctx = self.prices.enrich_market_context(m.question)
             if price_ctx:

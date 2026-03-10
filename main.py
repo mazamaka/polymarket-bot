@@ -215,7 +215,62 @@ def run_paper_trading(
                     f"bal: ${storage.balance:.2f}"
                 )
 
-        # 5. Сводка
+        # 6. Корреляционный скан — поиск противоречий между связанными рынками
+        try:
+            from analyzer.correlations import scan_correlations, _get_yes_price
+
+            _log("Сканируем кросс-маркет корреляции...")
+            corr_signals = scan_correlations(
+                min_liquidity=500, max_events=200, on_log=_log
+            )
+            for sig in corr_signals:
+                if sig.confidence < 0.5:
+                    continue
+                buy_market = sig.market_buy
+                if buy_market.id in storage.get_open_market_ids():
+                    continue
+                yes_price = _get_yes_price(buy_market)
+                # Создаём prediction из корреляционного сигнала
+                corr_prediction = AIPrediction(
+                    market_id=buy_market.id,
+                    question=buy_market.question,
+                    ai_probability=yes_price + abs(sig.actual_spread),
+                    market_probability=yes_price,
+                    confidence=sig.confidence,
+                    edge=abs(sig.actual_spread),
+                    reasoning=f"Correlation: {sig.signal_type} in '{sig.event_title}'. {sig.expected_relation}",
+                    recommended_side="BUY_YES",
+                )
+                signal = risk_mgr.evaluate_signal(corr_prediction, storage.balance)
+                if signal:
+                    position = Position(
+                        market_id=signal.market_id,
+                        token_id=signal.token_id,
+                        question=signal.prediction.question,
+                        entry_price=signal.price,
+                        size_usd=signal.size_usd,
+                        current_price=signal.price,
+                        side="BUY_YES",
+                        end_date=buy_market.end_date,
+                        slug=buy_market.slug,
+                        edge=corr_prediction.edge,
+                        confidence=corr_prediction.confidence,
+                        ai_probability=corr_prediction.ai_probability,
+                        reasoning=corr_prediction.reasoning[:300],
+                        volume=buy_market.volume,
+                        liquidity=buy_market.liquidity,
+                    )
+                    new_balance = storage.balance - signal.size_usd
+                    storage.add_position(position, new_balance)
+                    _log(
+                        f"CORR OPEN: {buy_market.question[:50]} @ {signal.price:.4f} | "
+                        f"${signal.size_usd:.2f} | spread: {sig.actual_spread:+.2f} | "
+                        f"bal: ${storage.balance:.2f}"
+                    )
+        except Exception as e:
+            logger.error("Correlation scan error: %s", e)
+
+        # 7. Сводка
         summary = storage.get_summary()
         logger.info("=" * 60)
         logger.info("ПОРТФЕЛЬ:")

@@ -236,6 +236,12 @@ function renderPositions(positions) {
     body.textContent = '';
     txt(el('pos-count'), positions.length + ' active');
 
+    positions.sort((a, b) => {
+        const da = a.end_date ? new Date(a.end_date).getTime() : Infinity;
+        const db = b.end_date ? new Date(b.end_date).getTime() : Infinity;
+        return da - db;
+    });
+
     if (!positions || !positions.length) {
         const d = ce('div'); d.className = 'empty'; txt(d, 'No open positions — waiting for signals...'); body.appendChild(d);
         return;

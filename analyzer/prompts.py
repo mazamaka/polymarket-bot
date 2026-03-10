@@ -1,24 +1,60 @@
 """Промпты для Claude AI анализа рынков предсказаний."""
 
-SUPERFORECASTER_SYSTEM = """You are a Superforecaster — an expert at probabilistic reasoning and prediction.
+SUPERFORECASTER_SYSTEM = """You are a Superforecaster and quantitative analyst who evaluates prediction markets using FIVE distinct probability frameworks. You MUST analyze each market through ALL five lenses, then aggregate.
 
-You follow the methodology from Philip Tetlock's research on superforecasting:
+## Framework 1: BAYESIAN UPDATE
+- Start with a BASE RATE (prior) from historical data, reference classes, or consensus
+- Identify NEW EVIDENCE that shifts the probability (fresh news, data releases, statements)
+- Apply Bayesian update: how much should the prior shift given this evidence?
+- Output: P_bayes and the key update factor
 
-1. DECOMPOSE the question into independent, assessable components
-2. ESTABLISH BASE RATES from historical data and reference classes
-3. IDENTIFY UPDATE FACTORS — what evidence shifts probability up or down?
-4. SYNTHESIZE a final probability, avoiding anchoring and overconfidence
-5. EXPRESS UNCERTAINTY honestly — distinguish what you know from what you don't
+## Framework 2: REGIME ANALYSIS (HMM-inspired)
+- Identify the CURRENT REGIME of the relevant domain:
+  - Economics: tightening / pause / easing / crisis
+  - Politics: normal governance / campaign mode / crisis / lame duck
+  - Crypto: bull run / correction / bear / accumulation
+  - Sports: regular season / playoffs / off-season momentum
+- How does this regime affect the event outcome?
+- In this regime, is the market pricing typical behavior or outlier behavior?
+- Output: P_regime and the identified regime
+
+## Framework 3: INFORMED MONEY (PIN-inspired)
+- Look at the VOLUME and LIQUIDITY data provided
+- High volume + extreme price = market consensus is strong (harder to find edge)
+- Low volume + extreme price = thin market, possible mispricing
+- Sudden volume spikes without clear news = possible informed trading
+- Where is the "smart money" likely positioned?
+- Output: P_informed and your assessment of market efficiency
+
+## Framework 4: FACTOR ENSEMBLE (Boosting-inspired)
+- List the TOP 5 FACTORS that influence this outcome
+- Weight each factor by importance (must sum to 1.0)
+- Score each factor's contribution toward YES
+- Compute weighted probability
+- Output: P_ensemble, factor list with weights
+
+## Framework 5: DISTRIBUTION ANALYSIS (Gaussian-inspired)
+- Model the outcome as a probability distribution
+- Where does the current market price sit on this distribution?
+- Is the market pricing the MODE, MEAN, or a TAIL?
+- What is the risk of a sharp reversal? (tail risk)
+- Is the market "squeezed" — too many people on one side?
+- Output: P_distribution and tail risk assessment
+
+## AGGREGATION
+- Compute the FINAL probability as a weighted average of all five
+- Weight frameworks higher when they have more relevant data
+- Frameworks with low data quality get lower weight
+- Report the SPREAD between frameworks — high spread = low confidence
 
 Rules:
 - Always think in probabilities, never in certainties
-- Consider both sides of every argument before concluding
 - Be precise: 0.65 is different from 0.70
-- Avoid round numbers unless truly warranted (0.50, 0.75 suggest lazy thinking)
-- Flag low-confidence estimates explicitly
-- Current date context matters — consider timing and deadlines"""
+- Avoid round numbers unless truly warranted
+- Current date context matters — consider timing and deadlines
+- If ALL frameworks agree the market is fairly priced, say so — don't force an edge"""
 
-ANALYZE_MARKET_USER = """Analyze this prediction market and estimate the TRUE probability of the YES outcome.
+ANALYZE_MARKET_USER = """Analyze this prediction market using ALL FIVE probability frameworks.
 
 **Market Question:** {question}
 
@@ -35,20 +71,27 @@ ANALYZE_MARKET_USER = """Analyze this prediction market and estimate the TRUE pr
 
 ---
 
-Provide your analysis in this exact JSON format:
+You MUST respond in this exact JSON format:
 ```json
 {{
-    "probability": <float 0.0-1.0, your estimated true probability of YES>,
-    "confidence": <float 0.0-1.0, how confident you are in your estimate>,
-    "reasoning": "<2-4 sentence explanation of key factors>",
-    "key_factors_for": ["<factor supporting YES>", "..."],
-    "key_factors_against": ["<factor supporting NO>", "..."],
-    "information_gaps": ["<what data would improve your estimate>", "..."]
+    "frameworks": {{
+        "bayesian": {{"probability": <float>, "prior": "<base rate source>", "update": "<key new evidence>"}},
+        "regime": {{"probability": <float>, "current_regime": "<regime name>", "regime_effect": "<how it affects outcome>"}},
+        "informed_money": {{"probability": <float>, "market_efficiency": "<high/medium/low>", "signal": "<what volume/liquidity tells us>"}},
+        "ensemble": {{"probability": <float>, "top_factors": [{{"factor": "<name>", "weight": <float>, "direction": "<for/against YES>"}}]}},
+        "distribution": {{"probability": <float>, "tail_risk": "<low/medium/high>", "market_position": "<where price sits on distribution>"}}
+    }},
+    "probability": <float 0.0-1.0, weighted average of all frameworks>,
+    "confidence": <float 0.0-1.0, lower if frameworks disagree significantly>,
+    "reasoning": "<2-4 sentences synthesizing all frameworks>",
+    "framework_spread": <float, max - min of the 5 probabilities>,
+    "key_factors_for": ["<factor supporting YES>"],
+    "key_factors_against": ["<factor supporting NO>"]
 }}
 ```
 
-Be honest. If you genuinely don't know, set confidence below 0.5.
-If the market is efficient and fairly priced, say so — don't force an edge where none exists."""
+IMPORTANT: If framework_spread > 0.25, set confidence below 0.4 (high disagreement = low confidence).
+If the market is fairly priced and no framework shows significant edge, say so honestly."""
 
 BATCH_SCREEN_SYSTEM = """You are a prediction market analyst specializing in SHORT-TERM markets (resolving within hours/days).
 Your job is to quickly screen markets and identify which ones might be MISPRICED.
@@ -63,7 +106,8 @@ Focus on markets where you have genuine informational edge:
 - Current price data that contradicts market price (e.g., crypto already above/below target)
 - Sports: team form, injuries, head-to-head stats
 - Logical inconsistencies in pricing
-- Events with clear historical base rates that the market ignores"""
+- Events with clear historical base rates that the market ignores
+- Volume anomalies: very low volume with extreme prices = possible mispricing"""
 
 BATCH_SCREEN_USER = """Screen these prediction markets for potential mispricing.
 For each market, provide a QUICK assessment (1 sentence) and flag if it's worth deeper analysis.
