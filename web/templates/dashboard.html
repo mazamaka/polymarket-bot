@@ -3,396 +3,159 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Polymarket Bot Dashboard</title>
+    <title>Polymarket Bot</title>
     <style>
         :root {
-            --bg: #0d1117;
-            --card: #161b22;
-            --border: #30363d;
-            --text: #e6edf3;
-            --text-dim: #8b949e;
-            --green: #3fb950;
-            --red: #f85149;
-            --blue: #58a6ff;
-            --yellow: #d29922;
-            --purple: #bc8cff;
-            --accent: #58a6ff;
+            --bg: #0d1117; --card: #161b22; --border: #30363d;
+            --text: #e6edf3; --dim: #8b949e;
+            --green: #3fb950; --red: #f85149; --blue: #58a6ff;
+            --yellow: #d29922; --purple: #bc8cff;
         }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        * { margin:0; padding:0; box-sizing:border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            line-height: 1.5;
-            padding: 20px;
-            max-width: 1400px;
-            margin: 0 auto;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg); color: var(--text);
+            line-height: 1.5; padding: 20px;
+            max-width: 1440px; margin: 0 auto;
         }
 
         /* Header */
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 24px;
-            padding-bottom: 16px;
-            border-bottom: 1px solid var(--border);
-        }
-        .header h1 { font-size: 24px; font-weight: 600; }
-        .header h1 span { color: var(--accent); }
-        .header-right { display: flex; gap: 12px; align-items: center; }
-        .header-time { color: var(--text-dim); font-size: 14px; }
+        .header { display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; padding-bottom:14px; border-bottom:1px solid var(--border); flex-wrap:wrap; gap:12px; }
+        .header h1 { font-size:22px; }
+        .header h1 span { color:var(--blue); }
+        .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+
+        /* Status bar */
+        .status-bar { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--dim); margin-bottom:16px; }
+        .dot { width:8px; height:8px; border-radius:50%; }
+        .dot.idle { background:var(--dim); }
+        .dot.running { background:var(--green); animation:pulse 1.5s infinite; }
+        .dot.monitoring { background:var(--yellow); animation:pulse 1s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 
         /* Buttons */
-        .btn {
-            padding: 8px 16px;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            background: var(--card);
-            color: var(--text);
-            cursor: pointer;
-            font-size: 14px;
-            transition: all 0.2s;
-        }
-        .btn:hover { border-color: var(--accent); color: var(--accent); }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .btn-primary {
-            background: #238636;
-            border-color: #238636;
-            color: #fff;
-        }
-        .btn-primary:hover { background: #2ea043; border-color: #2ea043; color: #fff; }
+        .btn { padding:6px 14px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--text); cursor:pointer; font-size:13px; transition:all .15s; white-space:nowrap; }
+        .btn:hover { border-color:var(--blue); color:var(--blue); }
+        .btn:disabled { opacity:.4; cursor:not-allowed; }
+        .btn-go { background:#238636; border-color:#238636; color:#fff; }
+        .btn-go:hover { background:#2ea043; }
+        .btn-sm { padding:4px 10px; font-size:12px; }
 
-        /* Stats Grid */
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 16px;
-            margin-bottom: 24px;
-        }
-        .stat-card {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 20px;
-        }
-        .stat-label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
-        .stat-value { font-size: 28px; font-weight: 600; margin-top: 4px; }
-        .stat-sub { font-size: 13px; color: var(--text-dim); margin-top: 4px; }
-        .green { color: var(--green); }
-        .red { color: var(--red); }
-        .blue { color: var(--blue); }
-        .yellow { color: var(--yellow); }
+        /* Stats */
+        .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-bottom:20px; }
+        .stat { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; }
+        .stat-label { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; }
+        .stat-val { font-size:26px; font-weight:600; margin-top:2px; }
+        .stat-sub { font-size:12px; color:var(--dim); margin-top:2px; }
+        .green { color:var(--green); } .red { color:var(--red); } .blue { color:var(--blue); } .yellow { color:var(--yellow); }
 
         /* Sections */
-        .section {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            margin-bottom: 24px;
-            overflow: hidden;
-        }
-        .section-header {
-            padding: 16px 20px;
-            border-bottom: 1px solid var(--border);
-            font-weight: 600;
-            font-size: 16px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
+        .section { background:var(--card); border:1px solid var(--border); border-radius:8px; margin-bottom:20px; overflow:hidden; }
+        .sec-head { padding:12px 16px; border-bottom:1px solid var(--border); font-weight:600; font-size:15px; display:flex; justify-content:space-between; align-items:center; }
+        .sec-head .right { font-size:12px; color:var(--dim); font-weight:400; }
 
         /* Table */
-        table { width: 100%; border-collapse: collapse; }
-        th {
-            text-align: left;
-            padding: 10px 16px;
-            font-size: 12px;
-            color: var(--text-dim);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            border-bottom: 1px solid var(--border);
-            background: rgba(0,0,0,0.2);
-        }
-        td {
-            padding: 12px 16px;
-            font-size: 14px;
-            border-bottom: 1px solid var(--border);
-        }
-        tr:last-child td { border-bottom: none; }
-        tr:hover { background: rgba(88,166,255,0.04); }
+        table { width:100%; border-collapse:collapse; }
+        th { text-align:left; padding:8px 14px; font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.4px; border-bottom:1px solid var(--border); background:rgba(0,0,0,.2); }
+        td { padding:10px 14px; font-size:13px; border-bottom:1px solid var(--border); }
+        tr:last-child td { border-bottom:none; }
+        tr:hover { background:rgba(88,166,255,.03); }
 
         /* Badges */
-        .badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-        .badge-yes { background: rgba(63,185,80,0.15); color: var(--green); }
-        .badge-no { background: rgba(248,81,73,0.15); color: var(--red); }
-        .badge-skip { background: rgba(139,148,158,0.15); color: var(--text-dim); }
-        .badge-open { background: rgba(88,166,255,0.15); color: var(--blue); }
-        .badge-close { background: rgba(210,153,34,0.15); color: var(--yellow); }
+        .badge { display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; font-weight:600; }
+        .b-yes { background:rgba(63,185,80,.12); color:var(--green); }
+        .b-no { background:rgba(248,81,73,.12); color:var(--red); }
+        .b-skip { background:rgba(139,148,158,.12); color:var(--dim); }
+        .b-open { background:rgba(88,166,255,.12); color:var(--blue); }
+        .b-close { background:rgba(210,153,34,.12); color:var(--yellow); }
 
-        /* Progress bar */
-        .pnl-bar {
-            width: 100px;
-            height: 6px;
-            background: var(--border);
-            border-radius: 3px;
-            overflow: hidden;
-            display: inline-block;
-            vertical-align: middle;
-            margin-left: 8px;
-        }
-        .pnl-bar-fill {
-            height: 100%;
-            border-radius: 3px;
-            transition: width 0.3s;
-        }
+        /* PnL bar */
+        .pbar { width:80px; height:5px; background:var(--border); border-radius:3px; display:inline-block; vertical-align:middle; margin-left:6px; overflow:hidden; }
+        .pbar-fill { height:100%; border-radius:3px; }
 
-        /* Status indicator */
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 6px;
-            animation: pulse 2s infinite;
-        }
-        .status-dot.live { background: var(--green); }
-        .status-dot.idle { background: var(--text-dim); animation: none; }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.4; }
-        }
+        /* Empty */
+        .empty { padding:32px; text-align:center; color:var(--dim); }
+
+        /* Log */
+        .log { max-height:200px; overflow-y:auto; padding:12px 16px; font-family:'JetBrains Mono',monospace; font-size:12px; line-height:1.7; color:var(--dim); background:rgba(0,0,0,.3); }
+        .log-entry { border-bottom:1px solid rgba(48,54,61,.5); padding:2px 0; }
+        .log-entry.info { color:var(--text); }
+        .log-entry.trade { color:var(--green); }
+        .log-entry.error { color:var(--red); }
 
         /* Toast */
-        .toast {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            padding: 12px 20px;
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            font-size: 14px;
-            display: none;
-            z-index: 100;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-        }
-        .toast.show { display: block; }
+        .toast { position:fixed; bottom:20px; right:20px; padding:10px 18px; background:var(--card); border:1px solid var(--border); border-radius:8px; font-size:13px; display:none; z-index:100; box-shadow:0 8px 24px rgba(0,0,0,.5); }
+        .toast.show { display:block; }
 
-        /* Empty state */
-        .empty {
-            padding: 40px;
-            text-align: center;
-            color: var(--text-dim);
-        }
-        .empty-icon { font-size: 48px; margin-bottom: 12px; }
-
-        /* Responsive */
-        @media (max-width: 768px) {
-            body { padding: 12px; }
-            .stats { grid-template-columns: repeat(2, 1fr); }
-            .stat-value { font-size: 22px; }
-            .header { flex-direction: column; gap: 12px; }
+        @media (max-width:768px) {
+            body { padding:10px; }
+            .stats { grid-template-columns:repeat(2,1fr); }
+            .stat-val { font-size:20px; }
         }
     </style>
 </head>
 <body>
 
-<!-- Header -->
 <div class="header">
     <h1><span>Polymarket</span> AI Bot</h1>
-    <div class="header-right">
-        <span class="header-time" id="last-update">{{ now }}</span>
-        <button class="btn" onclick="refreshData()">Refresh</button>
-        <button class="btn" onclick="runMonitor()" id="btn-monitor">Update Prices</button>
-        <button class="btn btn-primary" onclick="runPaper()" id="btn-paper">Run Paper Trading</button>
+    <div class="controls">
+        <button class="btn" onclick="refresh()">Refresh</button>
+        <button class="btn" onclick="runMonitor()" id="btn-mon">Update Prices</button>
+        <button class="btn btn-go" onclick="runPaper()" id="btn-paper">Run Paper Trading</button>
+        <button class="btn" onclick="runAnalysis()" id="btn-analysis">Run Analysis</button>
     </div>
+</div>
+
+<div class="status-bar">
+    <div class="dot" id="status-dot"></div>
+    <span id="status-text">Connecting...</span>
+    <span style="margin-left:auto" id="ws-indicator">WS: connecting</span>
 </div>
 
 <!-- Stats -->
 <div class="stats">
-    <div class="stat-card">
-        <div class="stat-label">Balance</div>
-        <div class="stat-value">${{ "%.2f"|format(summary.balance_usd) }}</div>
-        <div class="stat-sub">Paper Trading</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-label">Invested</div>
-        <div class="stat-value blue">${{ "%.2f"|format(summary.invested_usd) }}</div>
-        <div class="stat-sub">{{ summary.open_positions }} open positions</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-label">Unrealized P&L</div>
-        <div class="stat-value {% if summary.unrealized_pnl >= 0 %}green{% else %}red{% endif %}">
-            ${{ "%+.2f"|format(summary.unrealized_pnl) }}
-        </div>
-        <div class="stat-sub">Open positions</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-label">Realized P&L</div>
-        <div class="stat-value {% if summary.realized_pnl >= 0 %}green{% else %}red{% endif %}">
-            ${{ "%+.2f"|format(summary.realized_pnl) }}
-        </div>
-        <div class="stat-sub">{{ summary.closed_trades }} closed trades</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-label">Total Trades</div>
-        <div class="stat-value">{{ summary.total_trades }}</div>
-        <div class="stat-sub">Since inception</div>
-    </div>
+    <div class="stat"><div class="stat-label">Balance</div><div class="stat-val" id="s-balance">${{ "%.2f"|format(summary.balance_usd) }}</div><div class="stat-sub">Paper Trading</div></div>
+    <div class="stat"><div class="stat-label">Invested</div><div class="stat-val blue" id="s-invested">${{ "%.2f"|format(summary.invested_usd) }}</div><div class="stat-sub" id="s-open-count">{{ summary.open_positions }} positions</div></div>
+    <div class="stat"><div class="stat-label">Unrealized P&L</div><div class="stat-val" id="s-upnl">${{ "%+.2f"|format(summary.unrealized_pnl) }}</div><div class="stat-sub">Open positions</div></div>
+    <div class="stat"><div class="stat-label">Realized P&L</div><div class="stat-val" id="s-rpnl">${{ "%+.2f"|format(summary.realized_pnl) }}</div><div class="stat-sub" id="s-closed-count">{{ summary.closed_trades }} closed</div></div>
+    <div class="stat"><div class="stat-label">Total Trades</div><div class="stat-val" id="s-trades">{{ summary.total_trades }}</div><div class="stat-sub">Since inception</div></div>
+    <div class="stat"><div class="stat-label">Win Rate</div><div class="stat-val" id="s-winrate">--</div><div class="stat-sub">Closed trades</div></div>
 </div>
 
-<!-- Open Positions -->
+<!-- Positions -->
 <div class="section">
-    <div class="section-header">
-        <span><span class="status-dot {% if summary.open_positions > 0 %}live{% else %}idle{% endif %}"></span>Open Positions</span>
-        <span style="font-size:13px;color:var(--text-dim)">{{ summary.open_positions }} active</span>
-    </div>
-    {% if summary.positions %}
-    <table>
-        <thead>
-            <tr>
-                <th>Market</th>
-                <th>Side</th>
-                <th>Entry</th>
-                <th>Current</th>
-                <th>Size</th>
-                <th>P&L</th>
-                <th>Opened</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for p in summary.positions %}
-            <tr>
-                <td style="max-width:300px">{{ p.question }}</td>
-                <td>
-                    {% if 'YES' in p.side %}
-                    <span class="badge badge-yes">YES</span>
-                    {% else %}
-                    <span class="badge badge-no">NO</span>
-                    {% endif %}
-                </td>
-                <td>{{ "%.4f"|format(p.entry) }}</td>
-                <td>{{ "%.4f"|format(p.current) }}</td>
-                <td>${{ "%.2f"|format(p.size) }}</td>
-                <td>
-                    <span class="{% if p.pnl >= 0 %}green{% else %}red{% endif %}">
-                        ${{ "%+.2f"|format(p.pnl) }} ({{ p.pnl_pct }})
-                    </span>
-                    <div class="pnl-bar">
-                        {% set pnl_width = [([((p.pnl / p.size * 100) if p.size > 0 else 0) + 50, 0] | max), 100] | min %}
-                        <div class="pnl-bar-fill {% if p.pnl >= 0 %}green{% else %}red{% endif %}"
-                             style="width:{{ pnl_width }}%;background:{% if p.pnl >= 0 %}var(--green){% else %}var(--red){% endif %}"></div>
-                    </div>
-                </td>
-                <td style="font-size:12px;color:var(--text-dim)">{{ p.opened[:16] }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <div class="empty">
-        <div class="empty-icon">📊</div>
-        <div>No open positions yet</div>
-        <div style="margin-top:8px;font-size:13px">Run paper trading to start!</div>
-    </div>
-    {% endif %}
+    <div class="sec-head"><span>Open Positions</span><span class="right" id="pos-count">{{ summary.open_positions }} active</span></div>
+    <div id="positions-body"></div>
 </div>
 
 <!-- Trade History -->
 <div class="section">
-    <div class="section-header">
-        <span>Trade History</span>
-        <span style="font-size:13px;color:var(--text-dim)">last {{ history|length }} entries</span>
-    </div>
-    {% if history %}
-    <table>
-        <thead>
-            <tr>
-                <th>Time</th>
-                <th>Action</th>
-                <th>Market</th>
-                <th>Side</th>
-                <th>Price</th>
-                <th>Size</th>
-                <th>P&L</th>
-                <th>Balance</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for h in history %}
-            <tr>
-                <td style="font-size:12px;color:var(--text-dim)">{{ h.timestamp[:16] if h.timestamp else '' }}</td>
-                <td>
-                    {% if h.action == 'OPEN' %}
-                    <span class="badge badge-open">OPEN</span>
-                    {% else %}
-                    <span class="badge badge-close">CLOSE</span>
-                    {% endif %}
-                </td>
-                <td style="max-width:250px">{{ h.question[:50] if h.question else '' }}</td>
-                <td>
-                    {% if h.side and 'YES' in h.side %}
-                    <span class="badge badge-yes">YES</span>
-                    {% elif h.side %}
-                    <span class="badge badge-no">NO</span>
-                    {% endif %}
-                </td>
-                <td>{{ "%.4f"|format(h.entry_price) if h.entry_price is defined else '' }}</td>
-                <td>${{ "%.2f"|format(h.size_usd) if h.size_usd is defined else '' }}</td>
-                <td>
-                    {% if h.pnl is defined and h.pnl is not none %}
-                    <span class="{% if h.pnl >= 0 %}green{% else %}red{% endif %}">
-                        ${{ "%+.2f"|format(h.pnl) }}
-                    </span>
-                    {% endif %}
-                </td>
-                <td>${{ "%.2f"|format(h.balance_after) if h.balance_after is defined else '' }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <div class="empty">
-        <div class="empty-icon">📋</div>
-        <div>No trades yet</div>
-    </div>
-    {% endif %}
+    <div class="sec-head"><span>Trade History</span><span class="right" id="hist-count">{{ history|length }} entries</span></div>
+    <div id="history-body"></div>
 </div>
 
-<!-- Latest Analyses -->
-{% if analyses %}
+<!-- Live Log -->
 <div class="section">
-    <div class="section-header">
-        <span>Latest AI Analyses</span>
-    </div>
-    {% for analysis in analyses %}
-    <div style="padding:12px 20px;border-bottom:1px solid var(--border)">
-        <div style="font-size:13px;color:var(--text-dim);margin-bottom:8px">
-            {{ analysis.date }} — {{ analysis.total }} markets analyzed
-        </div>
-        {% for pred in analysis.predictions %}
-        <div style="padding:6px 0;display:flex;align-items:center;gap:12px;font-size:14px">
-            {% if pred.recommended_side == 'BUY_YES' %}
-            <span class="badge badge-yes">BUY YES</span>
-            {% elif pred.recommended_side == 'BUY_NO' %}
-            <span class="badge badge-no">BUY NO</span>
-            {% else %}
-            <span class="badge badge-skip">SKIP</span>
-            {% endif %}
-            <span style="flex:1;max-width:350px">{{ pred.question[:55] }}</span>
-            <span>AI: <b>{{ "%.0f"|format(pred.ai_probability * 100) }}%</b></span>
-            <span style="color:var(--text-dim)">vs Mkt: {{ "%.0f"|format(pred.market_probability * 100) }}%</span>
-            <span class="{% if pred.edge > 0 %}green{% else %}red{% endif %}">
-                Edge: {{ "%+.0f"|format(pred.edge * 100) }}%
+    <div class="sec-head"><span>Live Activity</span><button class="btn btn-sm" onclick="clearLog()">Clear</button></div>
+    <div class="log" id="live-log"></div>
+</div>
+
+<!-- Analyses -->
+{% if analyses %}
+<div class="section" id="analyses-section">
+    <div class="sec-head"><span>Latest AI Analyses</span></div>
+    {% for a in analyses %}
+    <div style="padding:10px 16px;border-bottom:1px solid var(--border)">
+        <div style="font-size:12px;color:var(--dim);margin-bottom:6px">{{ a.date }} | {{ a.total }} markets</div>
+        {% for p in a.predictions %}
+        <div style="padding:4px 0;display:flex;align-items:center;gap:10px;font-size:13px;flex-wrap:wrap">
+            <span class="badge {% if p.recommended_side == 'BUY_YES' %}b-yes{% elif p.recommended_side == 'BUY_NO' %}b-no{% else %}b-skip{% endif %}">
+                {{ p.recommended_side|replace('_',' ') if p.recommended_side != 'SKIP' else 'SKIP' }}
             </span>
-            <span style="color:var(--text-dim)">Conf: {{ "%.0f"|format(pred.confidence * 100) }}%</span>
+            <span style="flex:1;min-width:200px;max-width:320px">{{ p.question[:55] }}</span>
+            <span>AI: <b>{{ "%.0f"|format(p.ai_probability * 100) }}%</b></span>
+            <span style="color:var(--dim)">Mkt: {{ "%.0f"|format(p.market_probability * 100) }}%</span>
+            <span class="{% if p.edge > 0 %}green{% else %}red{% endif %}">{{ "%+.0f"|format(p.edge * 100) }}%</span>
         </div>
         {% endfor %}
     </div>
@@ -400,63 +163,257 @@
 </div>
 {% endif %}
 
-<!-- Toast notification -->
 <div class="toast" id="toast"></div>
 
 <script>
-function showToast(msg, duration = 3000) {
-    const t = document.getElementById('toast');
-    t.textContent = msg;
-    t.classList.add('show');
-    setTimeout(() => t.classList.remove('show'), duration);
+// ==================== DATA ====================
+// Server-rendered initial data (safe — comes from our own backend, numbers/strings only)
+const initialPositions = {{ summary.positions | tojson }};
+const initialHistory = {{ history | tojson }};
+
+// ==================== DOM HELPERS ====================
+function el(id) { return document.getElementById(id); }
+function ce(tag) { return document.createElement(tag); }
+function txt(parent, text) { parent.textContent = text; }
+
+function buildTable(headers, rows) {
+    const table = ce('table');
+    const thead = ce('thead');
+    const tr = ce('tr');
+    headers.forEach(h => { const th = ce('th'); txt(th, h); tr.appendChild(th); });
+    thead.appendChild(tr);
+    table.appendChild(thead);
+    const tbody = ce('tbody');
+    rows.forEach(rowEls => {
+        const tr = ce('tr');
+        rowEls.forEach(td => tr.appendChild(td));
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    return table;
 }
 
-async function refreshData() {
-    window.location.reload();
+function makeTd(text, style) {
+    const td = ce('td');
+    txt(td, text);
+    if (style) td.setAttribute('style', style);
+    return td;
 }
+
+function makeBadge(text, cls) {
+    const td = ce('td');
+    const span = ce('span');
+    span.className = 'badge ' + cls;
+    txt(span, text);
+    td.appendChild(span);
+    return td;
+}
+
+function makePnlTd(pnl, pnlPct, size) {
+    const td = ce('td');
+    const valSpan = ce('span');
+    valSpan.className = pnl >= 0 ? 'green' : 'red';
+    txt(valSpan, '$' + (pnl >= 0 ? '+' : '') + pnl.toFixed(2));
+    td.appendChild(valSpan);
+
+    const pctSpan = ce('span');
+    pctSpan.setAttribute('style', 'color:var(--dim);margin-left:4px');
+    txt(pctSpan, '(' + pnlPct + ')');
+    td.appendChild(pctSpan);
+
+    const bar = ce('div');
+    bar.className = 'pbar';
+    const fill = ce('div');
+    fill.className = 'pbar-fill';
+    const barW = Math.min(100, Math.max(0, (size > 0 ? (pnl / size * 100) : 0) + 50));
+    fill.setAttribute('style', 'width:' + barW + '%;background:' + (pnl >= 0 ? 'var(--green)' : 'var(--red)'));
+    bar.appendChild(fill);
+    td.appendChild(bar);
+    return td;
+}
+
+// ==================== RENDER ====================
+function renderPositions(positions) {
+    const body = el('positions-body');
+    body.textContent = '';
+    txt(el('pos-count'), positions.length + ' active');
+
+    if (!positions || positions.length === 0) {
+        const div = ce('div');
+        div.className = 'empty';
+        txt(div, 'No open positions');
+        body.appendChild(div);
+        return;
+    }
+
+    const rows = positions.map(p => {
+        const isYes = (p.side || '').includes('YES');
+        return [
+            makeTd(p.question || '', 'max-width:280px'),
+            makeBadge(isYes ? 'YES' : 'NO', isYes ? 'b-yes' : 'b-no'),
+            makeTd(p.entry.toFixed(4)),
+            makeTd(p.current.toFixed(4)),
+            makeTd('$' + p.size.toFixed(2)),
+            makePnlTd(p.pnl, p.pnl_pct, p.size),
+            makeTd((p.opened || '').slice(0, 16), 'font-size:11px;color:var(--dim)'),
+        ];
+    });
+    body.appendChild(buildTable(['Market','Side','Entry','Current','Size','P&L','Opened'], rows));
+}
+
+function renderHistory(history) {
+    const body = el('history-body');
+    body.textContent = '';
+    txt(el('hist-count'), history.length + ' entries');
+
+    if (!history || history.length === 0) {
+        const div = ce('div');
+        div.className = 'empty';
+        txt(div, 'No trades yet');
+        body.appendChild(div);
+        return;
+    }
+
+    const rows = history.map(h => {
+        const isOpen = h.action === 'OPEN';
+        const isYes = (h.side || '').includes('YES');
+        const pnlTd = ce('td');
+        if (h.pnl != null) {
+            const s = ce('span');
+            s.className = h.pnl >= 0 ? 'green' : 'red';
+            txt(s, '$' + (h.pnl >= 0 ? '+' : '') + h.pnl.toFixed(2));
+            pnlTd.appendChild(s);
+        }
+        const balTd = ce('td');
+        if (h.balance_after != null) txt(balTd, '$' + h.balance_after.toFixed(2));
+
+        const sideTd = h.side ? makeBadge(isYes ? 'YES' : 'NO', isYes ? 'b-yes' : 'b-no') : ce('td');
+
+        return [
+            makeTd((h.timestamp || '').slice(0, 16), 'font-size:11px;color:var(--dim)'),
+            makeBadge(h.action, isOpen ? 'b-open' : 'b-close'),
+            makeTd((h.question || '').slice(0, 50), 'max-width:220px'),
+            sideTd,
+            makeTd(h.entry_price != null ? h.entry_price.toFixed(4) : ''),
+            makeTd(h.size_usd != null ? '$' + h.size_usd.toFixed(2) : ''),
+            pnlTd,
+            balTd,
+        ];
+    });
+    body.appendChild(buildTable(['Time','Action','Market','Side','Price','Size','P&L','Balance'], rows));
+}
+
+// ==================== STATS UPDATE ====================
+function updateStats(d) {
+    txt(el('s-balance'), '$' + d.balance_usd.toFixed(2));
+    txt(el('s-invested'), '$' + d.invested_usd.toFixed(2));
+    txt(el('s-open-count'), d.open_positions + ' positions');
+
+    const upnl = el('s-upnl');
+    txt(upnl, '$' + (d.unrealized_pnl >= 0 ? '+' : '') + d.unrealized_pnl.toFixed(2));
+    upnl.className = 'stat-val ' + (d.unrealized_pnl >= 0 ? 'green' : 'red');
+
+    const rpnl = el('s-rpnl');
+    txt(rpnl, '$' + (d.realized_pnl >= 0 ? '+' : '') + d.realized_pnl.toFixed(2));
+    rpnl.className = 'stat-val ' + (d.realized_pnl >= 0 ? 'green' : 'red');
+
+    txt(el('s-trades'), d.total_trades);
+    txt(el('s-closed-count'), d.closed_trades + ' closed');
+}
+
+function updateStatus(s) {
+    el('status-dot').className = 'dot ' + s.state;
+    txt(el('status-text'), s.message || s.state);
+    el('btn-paper').disabled = s.state === 'running';
+    el('btn-analysis').disabled = s.state === 'running';
+    if (s.state === 'idle' && s.message) addLog(s.message, 'info');
+}
+
+// ==================== LOG ====================
+function addLog(msg, type) {
+    const log = el('live-log');
+    const div = ce('div');
+    div.className = 'log-entry ' + (type || 'info');
+    const ts = new Date().toLocaleTimeString('ru-RU');
+    txt(div, '[' + ts + '] ' + msg);
+    log.prepend(div);
+    while (log.children.length > 100) log.lastChild.remove();
+}
+function clearLog() { el('live-log').textContent = ''; }
+
+// ==================== WEBSOCKET ====================
+let ws = null;
+
+function connectWS() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(proto + '//' + location.host + '/ws');
+
+    ws.onopen = function() {
+        txt(el('ws-indicator'), 'WS: connected');
+        el('ws-indicator').style.color = 'var(--green)';
+        addLog('WebSocket connected', 'info');
+    };
+
+    ws.onmessage = function(e) {
+        const msg = JSON.parse(e.data);
+        if (msg.event === 'portfolio') {
+            updateStats(msg.data);
+            renderPositions(msg.data.positions || []);
+        } else if (msg.event === 'history') {
+            renderHistory(msg.data);
+        } else if (msg.event === 'status') {
+            updateStatus(msg.data);
+        } else if (msg.event === 'analyses') {
+            addLog('New analysis available - refresh page to see', 'info');
+        }
+    };
+
+    ws.onclose = function() {
+        txt(el('ws-indicator'), 'WS: disconnected');
+        el('ws-indicator').style.color = 'var(--red)';
+        setTimeout(connectWS, 3000);
+    };
+
+    ws.onerror = function() { ws.close(); };
+}
+
+// ==================== ACTIONS ====================
+function showToast(msg) {
+    const t = el('toast');
+    txt(t, msg);
+    t.classList.add('show');
+    setTimeout(function() { t.classList.remove('show'); }, 3000);
+}
+
+function refresh() { window.location.reload(); }
 
 async function runMonitor() {
-    const btn = document.getElementById('btn-monitor');
-    btn.disabled = true;
-    btn.textContent = 'Updating...';
-    try {
-        const r = await fetch('/api/monitor', {method: 'POST'});
-        const data = await r.json();
-        showToast('Prices updated! Refreshing...');
-        setTimeout(() => window.location.reload(), 2000);
-    } catch(e) {
-        showToast('Error: ' + e.message);
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Update Prices';
-    }
+    el('btn-mon').disabled = true;
+    addLog('Updating prices...', 'info');
+    await fetch('/api/monitor', {method:'POST'});
+    el('btn-mon').disabled = false;
+    showToast('Prices updating...');
 }
 
 async function runPaper() {
-    const btn = document.getElementById('btn-paper');
-    btn.disabled = true;
-    btn.textContent = 'Running...';
-    showToast('Paper trading started... This may take a few minutes.');
-    try {
-        const r = await fetch('/api/run-paper', {method: 'POST'});
-        const data = await r.json();
-        showToast('Paper trading running in background. Refresh in a few minutes.');
-    } catch(e) {
-        showToast('Error: ' + e.message);
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Run Paper Trading';
-    }
+    addLog('Starting paper trading...', 'trade');
+    const r = await fetch('/api/run-paper', {method:'POST'});
+    if (r.status === 409) { showToast('Already running!'); return; }
+    showToast('Paper trading started');
 }
 
-// Auto-refresh every 60 seconds
-setInterval(() => {
-    document.getElementById('last-update').textContent = new Date().toLocaleString('ru-RU');
-    fetch('/api/portfolio').then(r => r.json()).then(data => {
-        // Could update cards dynamically here
-    }).catch(() => {});
-}, 60000);
-</script>
+async function runAnalysis() {
+    addLog('Starting analysis...', 'info');
+    const r = await fetch('/api/run-analysis', {method:'POST'});
+    if (r.status === 409) { showToast('Already running!'); return; }
+    showToast('Analysis started');
+}
 
+// ==================== INIT ====================
+renderPositions(initialPositions);
+renderHistory(initialHistory);
+addLog('Dashboard loaded', 'info');
+connectWS();
+</script>
 </body>
 </html>

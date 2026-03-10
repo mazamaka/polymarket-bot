@@ -214,6 +214,90 @@ def run_monitor() -> None:
     logger.info(json.dumps(summary, indent=2, ensure_ascii=False))
 
 
+def run_live_trading(max_markets: int = 200, use_thinking: bool = True) -> None:
+    """Фаза 2: live trading с реальными ордерами через CLOB API."""
+    logger.info("=== POLYMARKET AI BOT — ФАЗА 2: LIVE TRADING ===")
+    logger.warning(
+        "ВНИМАНИЕ: реальные деньги! Убедитесь что настроен POLYGON_WALLET_PRIVATE_KEY"
+    )
+
+    from trader.live_executor import LiveExecutor
+
+    api = PolymarketAPI()
+    analyzer = ClaudeAnalyzer(use_thinking=use_thinking)
+    risk_mgr = RiskManager()
+    storage = PortfolioStorage()
+
+    try:
+        executor = LiveExecutor()
+        balance = executor.get_balance()
+        logger.info("Wallet balance: $%.2f USDC", balance)
+
+        if balance < 1.0:
+            logger.error("Недостаточно средств на кошельке: $%.2f", balance)
+            return
+
+        # Обновляем позиции
+        if storage.positions:
+            update_positions(storage)
+
+        # Рынки
+        markets = api.get_active_markets(max_markets=max_markets)
+        tradeable = api.filter_tradeable_markets(markets)
+
+        if not tradeable:
+            logger.warning("Нет торгуемых рынков")
+            return
+
+        open_ids = storage.get_open_market_ids()
+        to_screen = [m for m in tradeable if m.id not in open_ids]
+        interesting = analyzer.batch_screen_markets(to_screen)
+
+        if not interesting:
+            logger.info("Нет новых интересных рынков")
+            return
+
+        for item in interesting:
+            market_id = item.get("market_id", "")
+            market = next((m for m in tradeable if m.id == market_id), None)
+            if not market:
+                continue
+
+            prediction = analyzer.analyze_market(market)
+            if not prediction:
+                continue
+
+            signal = risk_mgr.evaluate_signal(prediction, balance)
+            if not signal:
+                continue
+
+            # Live execute
+            result = executor.execute_limit_order(signal)
+            if result:
+                from polymarket.models import Position
+
+                position = Position(
+                    market_id=signal.market_id,
+                    token_id=signal.token_id,
+                    question=signal.prediction.question,
+                    entry_price=signal.price,
+                    size_usd=signal.size_usd,
+                    current_price=signal.price,
+                    side=signal.prediction.recommended_side,
+                )
+                new_balance = storage.balance - signal.size_usd
+                storage.add_position(position, new_balance)
+                balance -= signal.size_usd
+
+        summary = storage.get_summary()
+        logger.info("=" * 60)
+        logger.info("ПОРТФЕЛЬ (Live):")
+        logger.info(json.dumps(summary, indent=2, ensure_ascii=False))
+
+    finally:
+        api.close()
+
+
 def run_scheduler(interval_min: int, max_markets: int, use_thinking: bool) -> None:
     """Запуск по расписанию: paper trading + мониторинг каждые N минут."""
     logger.info("=== SCHEDULER: каждые %d мин ===", interval_min)
@@ -249,7 +333,7 @@ def main() -> None:
     )
     parser.add_argument("--web", action="store_true", help="Start web dashboard")
     parser.add_argument(
-        "--live", action="store_true", help="Live trading (NOT IMPLEMENTED)"
+        "--live", action="store_true", help="Live trading (real money!)"
     )
     parser.add_argument(
         "--top", type=int, default=200, help="Top N markets (default: 200)"
@@ -266,8 +350,10 @@ def main() -> None:
     use_thinking = not args.no_thinking
 
     if args.live:
-        logger.error("Live trading ещё не реализован. Используйте --paper")
-        sys.exit(1)
+        if not settings.polygon_wallet_private_key:
+            logger.error("POLYGON_WALLET_PRIVATE_KEY не установлен! Добавьте в .env")
+            sys.exit(1)
+        run_live_trading(max_markets=args.top, use_thinking=use_thinking)
     elif args.web:
         from web.app import start_web
 
