@@ -150,6 +150,11 @@ async def api_run_analysis(background_tasks: BackgroundTasks) -> JSONResponse:
     return JSONResponse({"status": "started"})
 
 
+def _broadcast_log(msg: str) -> None:
+    """Callback для трансляции логов paper trading в веб."""
+    sync_broadcast("log", msg)
+
+
 def _set_status(state: str, message: str = "") -> None:
     bot_status["state"] = state
     bot_status["message"] = message
@@ -178,7 +183,7 @@ def _run_paper_bg() -> None:
 
     _set_status("running", "Paper trading in progress...")
     try:
-        run_paper_trading(max_markets=500)
+        run_paper_trading(max_markets=500, on_log=_broadcast_log)
         storage = PortfolioStorage()
         sync_broadcast("portfolio", storage.get_summary())
         sync_broadcast("history", list(reversed(storage.history[-30:])))
@@ -194,7 +199,7 @@ def _run_paper_bg_fast() -> None:
 
     _set_status("running", "Auto paper trading (500 markets, short-term)...")
     try:
-        run_paper_trading(max_markets=500)
+        run_paper_trading(max_markets=500, on_log=_broadcast_log)
         storage = PortfolioStorage()
         sync_broadcast("portfolio", storage.get_summary())
         sync_broadcast("history", list(reversed(storage.history[-30:])))

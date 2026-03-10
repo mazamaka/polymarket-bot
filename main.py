@@ -108,45 +108,50 @@ def run_analysis(max_markets: int = 200) -> list[AIPrediction]:
         api.close()
 
 
-def run_paper_trading(max_markets: int = 200) -> None:
+def run_paper_trading(
+    max_markets: int = 200,
+    on_log: callable = None,
+) -> None:
     """Фаза 1: paper trading с persistent storage."""
     logger.info("=== POLYMARKET AI BOT — ФАЗА 1: PAPER TRADING ===")
+
+    def _log(msg: str) -> None:
+        logger.info(msg)
+        if on_log:
+            on_log(msg)
 
     api = PolymarketAPI()
     analyzer = ClaudeAnalyzer()
     storage = PortfolioStorage()
     risk_mgr = RiskManager(positions=storage.positions)
 
-    logger.info(
-        "Баланс: $%.2f | Открытых позиций: %d", storage.balance, len(storage.positions)
-    )
+    _log(f"Баланс: ${storage.balance:.2f} | Открытых позиций: {len(storage.positions)}")
 
     try:
         # 1. Сначала обновляем существующие позиции
         if storage.positions:
-            logger.info("Обновляем %d открытых позиций...", len(storage.positions))
+            _log(f"Обновляем {len(storage.positions)} открытых позиций...")
             update_positions(storage)
 
         # 2. Получаем и фильтруем рынки
         markets = api.get_active_markets(max_markets=max_markets)
         tradeable = api.filter_tradeable_markets(markets)
+        _log(f"Загружено {len(markets)} рынков → {len(tradeable)} прошли фильтр")
 
         if not tradeable:
-            logger.warning("Нет торгуемых рынков")
+            _log("Нет торгуемых рынков")
             return
 
         # 3. Скрининг (исключаем рынки где уже есть позиция)
         open_ids = storage.get_open_market_ids()
         to_screen = [m for m in tradeable if m.id not in open_ids]
-        logger.info(
-            "Скрининг %d рынков (исключено %d с позициями)...",
-            len(to_screen),
-            len(open_ids),
+        _log(
+            f"AI скрининг {len(to_screen)} рынков (исключено {len(open_ids)} с позициями)..."
         )
 
         interesting = analyzer.batch_screen_markets(to_screen)
         if not interesting:
-            logger.info("Нет новых интересных рынков")
+            _log("Нет новых интересных рынков")
         else:
             # 4. Параллельный анализ интересных рынков
             markets_to_analyze = []
@@ -156,14 +161,17 @@ def run_paper_trading(max_markets: int = 200) -> None:
                 if market:
                     markets_to_analyze.append(market)
 
-            logger.info(
-                "Глубокий анализ %d рынков (параллельно)...", len(markets_to_analyze)
+            _log(
+                f"Найдено {len(interesting)} потенциальных → глубокий анализ {len(markets_to_analyze)} рынков..."
             )
             predictions = analyzer.analyze_markets_parallel(
                 markets_to_analyze, max_workers=3
             )
 
             # 5. Торговля по результатам
+            _log(f"Анализ завершён: {len(predictions)} предсказаний, проверяем risk...")
+            from polymarket.models import Position
+
             for prediction in predictions:
                 market = next(
                     (m for m in tradeable if m.id == prediction.market_id), None
@@ -173,9 +181,12 @@ def run_paper_trading(max_markets: int = 200) -> None:
 
                 signal = risk_mgr.evaluate_signal(prediction, storage.balance)
                 if not signal:
+                    _log(
+                        f"SKIP: {prediction.question[:50]} | "
+                        f"edge: {prediction.edge * 100:+.0f}% | "
+                        f"conf: {prediction.confidence * 100:.0f}%"
+                    )
                     continue
-
-                from polymarket.models import Position
 
                 position = Position(
                     market_id=signal.market_id,
@@ -196,13 +207,12 @@ def run_paper_trading(max_markets: int = 200) -> None:
                 )
                 new_balance = storage.balance - signal.size_usd
                 storage.add_position(position, new_balance)
-                logger.info(
-                    "PAPER TRADE: %s %s @ %.4f | $%.2f | balance: $%.2f",
-                    signal.prediction.recommended_side,
-                    signal.prediction.question[:40],
-                    signal.price,
-                    signal.size_usd,
-                    storage.balance,
+                _log(
+                    f"OPEN: {signal.prediction.recommended_side} "
+                    f"{signal.prediction.question[:50]} @ {signal.price:.4f} | "
+                    f"${signal.size_usd:.2f} | edge: {prediction.edge * 100:+.0f}% | "
+                    f"conf: {prediction.confidence * 100:.0f}% | "
+                    f"bal: ${storage.balance:.2f}"
                 )
 
         # 5. Сводка
