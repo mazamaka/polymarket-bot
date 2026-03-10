@@ -14,35 +14,39 @@ logger = logging.getLogger(__name__)
 import re
 
 # Паттерны рынков где AI не имеет преимущества перед рынком
-_SPORTS_STATS_PATTERN = re.compile(
-    r"\b(points?|assists?|rebounds?|steals?|blocks?|goals?|tackles?|yards?|touchdowns?|strikeouts?|hits?|runs?)\s*(O/U|over/under|over|under)\s*\d",
-    re.IGNORECASE,
-)
-_SPORTS_MATCH_PATTERN = re.compile(
-    r"\b(vs\.?|versus)\b.*\b(BO[1-9]|game\s*\d|match|series)\b",
-    re.IGNORECASE,
-)
-_EXACT_WEATHER_PATTERN = re.compile(
-    r"\b(highest|lowest)\s+temperature\b.*\b(be\s+\d+|exactly)\b",
-    re.IGNORECASE,
-)
-_RANDOM_PHRASE_PATTERN = re.compile(
-    r'\bwill\s+\w+\s+say\s+"[^"]+"\s+during\b',
-    re.IGNORECASE,
-)
+_LOW_EDGE_PATTERNS = [
+    # Спортивные статы (player props)
+    re.compile(
+        r"\b(points?|assists?|rebounds?|steals?|blocks?|goals?|tackles?|yards?|touchdowns?|strikeouts?|hits?|runs?)\s*(O/U|over/under|over|under)\s*\d",
+        re.IGNORECASE,
+    ),
+    # Esports матчи (BO3, BO5, Group, VCL, etc.)
+    re.compile(
+        r"\b(vs\.?|versus)\b.*\b(BO[1-9]|game\s*\d|match|series|group\s+[a-z])\b",
+        re.IGNORECASE,
+    ),
+    # Спортивные матчи: O/U, spread, Both Teams to Score, win on date
+    re.compile(r"\bO/U\s+\d", re.IGNORECASE),
+    re.compile(r"\bSpread:\s+", re.IGNORECASE),
+    re.compile(r"\bBoth Teams to Score\b", re.IGNORECASE),
+    re.compile(r"\bwin on \d{4}-\d{2}-\d{2}\b", re.IGNORECASE),
+    # Погода: температура between/exactly/be X°
+    re.compile(
+        r"\b(highest|lowest)\s+temperature\b.*\b(be\s+(between\s+)?\d+|exactly)\b",
+        re.IGNORECASE,
+    ),
+    # Random catchphrases: "Will X say Y during Z"
+    re.compile(r'\bwill\s+\w+\s+say\s+"[^"]+"\s+during\b', re.IGNORECASE),
+    # Tweet count / social media metrics
+    re.compile(r"\b(post|tweet)\s+\d+.*\btweets?\b", re.IGNORECASE),
+    # Price "between $X and $Y" — узкие коридоры (рынок скорее эффективен)
+    re.compile(r"\bprice\b.*\bbetween\s+\$[\d,.]+\s+and\s+\$[\d,.]+\b", re.IGNORECASE),
+]
 
 
 def _is_low_edge_market(question: str) -> bool:
     """Проверить, является ли рынок типом где AI не имеет преимущества."""
-    if _SPORTS_STATS_PATTERN.search(question):
-        return True
-    if _SPORTS_MATCH_PATTERN.search(question):
-        return True
-    if _EXACT_WEATHER_PATTERN.search(question):
-        return True
-    if _RANDOM_PHRASE_PATTERN.search(question):
-        return True
-    return False
+    return any(p.search(question) for p in _LOW_EDGE_PATTERNS)
 
 
 class PolymarketAPI:
