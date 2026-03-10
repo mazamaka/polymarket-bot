@@ -27,8 +27,7 @@ def update_positions(storage: PortfolioStorage) -> None:
 
             yes_price = market.outcome_prices[0] if market.outcome_prices else 0.5
 
-            # Обновляем текущую цену и метаданные
-            pos.current_price = yes_price
+            # Обновляем метаданные
             if market.end_date and not pos.end_date:
                 pos.end_date = market.end_date
             if market.slug and not pos.slug:
@@ -38,28 +37,31 @@ def update_positions(storage: PortfolioStorage) -> None:
             if market.liquidity:
                 pos.liquidity = market.liquidity
 
-            # P&L расчёт
+            # Текущая цена нашего токена
+            # entry_price всегда хранит цену купленного токена (YES или NO)
             if pos.side == "BUY_YES":
-                pos.pnl = (
-                    (yes_price - pos.entry_price)
-                    * pos.size_usd
-                    / max(pos.entry_price, 0.001)
-                )
-                pos.pnl_pct = (yes_price - pos.entry_price) / max(
-                    pos.entry_price, 0.001
-                )
+                current_token_price = yes_price
             else:  # BUY_NO
-                no_entry = 1 - pos.entry_price
-                no_current = 1 - yes_price
-                pos.pnl = (no_current - no_entry) * pos.size_usd / max(no_entry, 0.001)
-                pos.pnl_pct = (no_current - no_entry) / max(no_entry, 0.001)
+                current_token_price = 1 - yes_price
+
+            pos.current_price = current_token_price
+
+            # P&L: единая формула для обоих сторон
+            pos.pnl = (
+                (current_token_price - pos.entry_price)
+                * pos.size_usd
+                / max(pos.entry_price, 0.001)
+            )
+            pos.pnl_pct = (current_token_price - pos.entry_price) / max(
+                pos.entry_price, 0.001
+            )
 
             logger.info(
                 "  %s | %s | Entry: %.2f → Now: %.2f | PnL: $%.2f (%+.1f%%)",
                 pos.side,
                 pos.question[:40],
                 pos.entry_price,
-                yes_price,
+                current_token_price,
                 pos.pnl,
                 pos.pnl_pct * 100,
             )
@@ -69,16 +71,18 @@ def update_positions(storage: PortfolioStorage) -> None:
                 logger.warning(
                     "STOP-LOSS: %s | PnL: %+.1f%%", pos.question[:40], pos.pnl_pct * 100
                 )
-                storage.close_position(pos.market_id, yes_price)
+                storage.close_position(pos.market_id, current_token_price)
                 closed_count += 1
                 continue
 
             # Рынок закрылся
             if market.closed:
                 logger.info(
-                    "RESOLVED: %s закрылся по цене %.2f", pos.question[:40], yes_price
+                    "RESOLVED: %s закрылся по цене %.2f",
+                    pos.question[:40],
+                    current_token_price,
                 )
-                storage.close_position(pos.market_id, yes_price)
+                storage.close_position(pos.market_id, current_token_price)
                 closed_count += 1
 
         storage.save()

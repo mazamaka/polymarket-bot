@@ -46,14 +46,12 @@ def save_results(predictions: list[AIPrediction], filename: str | None = None) -
     return path
 
 
-def run_analysis(
-    max_markets: int = 200, use_thinking: bool = True
-) -> list[AIPrediction]:
+def run_analysis(max_markets: int = 200) -> list[AIPrediction]:
     """Фаза 0: только анализ рынков, без торговли."""
     logger.info("=== POLYMARKET AI BOT — ФАЗА 0: АНАЛИЗ ===")
 
     api = PolymarketAPI()
-    analyzer = ClaudeAnalyzer(use_thinking=use_thinking)
+    analyzer = ClaudeAnalyzer()
 
     try:
         logger.info("Загружаем top %d рынков по ликвидности...", max_markets)
@@ -110,14 +108,14 @@ def run_analysis(
         api.close()
 
 
-def run_paper_trading(max_markets: int = 200, use_thinking: bool = True) -> None:
+def run_paper_trading(max_markets: int = 200) -> None:
     """Фаза 1: paper trading с persistent storage."""
     logger.info("=== POLYMARKET AI BOT — ФАЗА 1: PAPER TRADING ===")
 
     api = PolymarketAPI()
-    analyzer = ClaudeAnalyzer(use_thinking=use_thinking)
-    risk_mgr = RiskManager()
+    analyzer = ClaudeAnalyzer()
     storage = PortfolioStorage()
+    risk_mgr = RiskManager(positions=storage.positions)
 
     logger.info(
         "Баланс: $%.2f | Открытых позиций: %d", storage.balance, len(storage.positions)
@@ -233,7 +231,7 @@ def run_monitor() -> None:
     logger.info(json.dumps(summary, indent=2, ensure_ascii=False))
 
 
-def run_live_trading(max_markets: int = 200, use_thinking: bool = True) -> None:
+def run_live_trading(max_markets: int = 200) -> None:
     """Фаза 2: live trading с реальными ордерами через CLOB API."""
     logger.info("=== POLYMARKET AI BOT — ФАЗА 2: LIVE TRADING ===")
     logger.warning(
@@ -243,9 +241,9 @@ def run_live_trading(max_markets: int = 200, use_thinking: bool = True) -> None:
     from trader.live_executor import LiveExecutor
 
     api = PolymarketAPI()
-    analyzer = ClaudeAnalyzer(use_thinking=use_thinking)
-    risk_mgr = RiskManager()
+    analyzer = ClaudeAnalyzer()
     storage = PortfolioStorage()
+    risk_mgr = RiskManager(positions=storage.positions)
 
     try:
         executor = LiveExecutor()
@@ -317,7 +315,7 @@ def run_live_trading(max_markets: int = 200, use_thinking: bool = True) -> None:
         api.close()
 
 
-def run_scheduler(interval_min: int, max_markets: int, use_thinking: bool) -> None:
+def run_scheduler(interval_min: int, max_markets: int) -> None:
     """Запуск по расписанию: paper trading + мониторинг каждые N минут."""
     logger.info("=== SCHEDULER: каждые %d мин ===", interval_min)
 
@@ -329,7 +327,7 @@ def run_scheduler(interval_min: int, max_markets: int, use_thinking: bool) -> No
         )
 
         try:
-            run_paper_trading(max_markets=max_markets, use_thinking=use_thinking)
+            run_paper_trading(max_markets=max_markets)
         except KeyboardInterrupt:
             raise
         except Exception as e:
@@ -357,18 +355,13 @@ def main() -> None:
     parser.add_argument(
         "--top", type=int, default=200, help="Top N markets (default: 200)"
     )
-    parser.add_argument(
-        "--no-thinking", action="store_true", help="Disable extended thinking"
-    )
     args = parser.parse_args()
-
-    use_thinking = not args.no_thinking
 
     if args.live:
         if not settings.polygon_wallet_private_key:
             logger.error("POLYGON_WALLET_PRIVATE_KEY не установлен! Добавьте в .env")
             sys.exit(1)
-        run_live_trading(max_markets=args.top, use_thinking=use_thinking)
+        run_live_trading(max_markets=args.top)
     elif args.web:
         from web.app import start_web
 
@@ -376,11 +369,11 @@ def main() -> None:
     elif args.monitor:
         run_monitor()
     elif args.schedule:
-        run_scheduler(args.schedule, max_markets=args.top, use_thinking=use_thinking)
+        run_scheduler(args.schedule, max_markets=args.top)
     elif args.paper:
-        run_paper_trading(max_markets=args.top, use_thinking=use_thinking)
+        run_paper_trading(max_markets=args.top)
     else:
-        run_analysis(max_markets=args.top, use_thinking=use_thinking)
+        run_analysis(max_markets=args.top)
 
 
 if __name__ == "__main__":

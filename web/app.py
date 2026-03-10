@@ -42,14 +42,21 @@ async def broadcast(event: str, data: dict | str = "") -> None:
     ws_clients.difference_update(dead)
 
 
+_main_loop: asyncio.AbstractEventLoop | None = None
+
+
+@app.on_event("startup")
+async def _capture_loop() -> None:
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()
+
+
 def sync_broadcast(event: str, data: dict | str = "") -> None:
-    """Синхронная обёртка для broadcast (из background tasks)."""
+    """Синхронная обёртка для broadcast (из background tasks / thread pool)."""
+    if _main_loop is None:
+        return
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.ensure_future(broadcast(event, data))
-        else:
-            loop.run_until_complete(broadcast(event, data))
+        asyncio.run_coroutine_threadsafe(broadcast(event, data), _main_loop)
     except RuntimeError:
         pass
 
@@ -171,7 +178,7 @@ def _run_paper_bg() -> None:
 
     _set_status("running", "Paper trading in progress...")
     try:
-        run_paper_trading(max_markets=500, use_thinking=True)
+        run_paper_trading(max_markets=500)
         storage = PortfolioStorage()
         sync_broadcast("portfolio", storage.get_summary())
         sync_broadcast("history", list(reversed(storage.history[-30:])))
@@ -187,7 +194,7 @@ def _run_paper_bg_fast() -> None:
 
     _set_status("running", "Auto paper trading (500 markets, short-term)...")
     try:
-        run_paper_trading(max_markets=500, use_thinking=False)
+        run_paper_trading(max_markets=500)
         storage = PortfolioStorage()
         sync_broadcast("portfolio", storage.get_summary())
         sync_broadcast("history", list(reversed(storage.history[-30:])))
@@ -202,7 +209,7 @@ def _run_analysis_bg() -> None:
 
     _set_status("running", "Analysis in progress...")
     try:
-        run_analysis(max_markets=50, use_thinking=True)
+        run_analysis(max_markets=50)
         sync_broadcast("analyses", _load_latest_analyses())
         _set_status("idle", "Analysis completed")
     except Exception as e:

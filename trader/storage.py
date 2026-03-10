@@ -49,6 +49,7 @@ class PortfolioStorage:
         return 100.0 - spent
 
     def save(self) -> None:
+        self.equity_curve = self.equity_curve[-500:]
         positions_data = [p.model_dump(mode="json") for p in self.positions]
         POSITIONS_FILE.write_text(
             json.dumps(positions_data, indent=2, ensure_ascii=False, default=str)
@@ -94,22 +95,15 @@ class PortfolioStorage:
         self.save()
 
     def close_position(self, market_id: str, exit_price: float) -> float:
+        """Закрыть позицию. exit_price = цена нашего токена (YES или NO)."""
         pos = next((p for p in self.positions if p.market_id == market_id), None)
         if not pos:
             return 0.0
 
-        if pos.side == "BUY_YES":
-            pnl = (
-                (exit_price - pos.entry_price)
-                * pos.size_usd
-                / max(pos.entry_price, 0.001)
-            )
-        else:
-            pnl = (
-                (pos.entry_price - exit_price)
-                * pos.size_usd
-                / max(1 - pos.entry_price, 0.001)
-            )
+        # Единая формула: exit_price и entry_price — оба цена нашего токена
+        pnl = (
+            (exit_price - pos.entry_price) * pos.size_usd / max(pos.entry_price, 0.001)
+        )
 
         self.balance += pos.size_usd + pnl
         self.positions = [p for p in self.positions if p.market_id != market_id]

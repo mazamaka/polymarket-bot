@@ -78,11 +78,10 @@ def _call_claude(
 class ClaudeAnalyzer:
     """Анализирует рынки Polymarket с помощью Claude Code CLI."""
 
-    def __init__(self, use_thinking: bool = True) -> None:
+    def __init__(self) -> None:
         self.model = "opus"  # глубокий анализ — максимальное качество
         self.screen_model = "sonnet"  # скрининг — быстро и умно
         self.prices = PriceProvider()
-        self.use_thinking = use_thinking
 
     def analyze_market(self, market: Market) -> AIPrediction | None:
         """Глубокий анализ одного рынка."""

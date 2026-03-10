@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 class RiskManager:
     """Контролирует риски: размер позиций, общая экспозиция, stop-loss."""
 
-    def __init__(self) -> None:
-        self.positions: list[Position] = []
+    def __init__(self, positions: list[Position] | None = None) -> None:
+        self.positions: list[Position] = positions or []
 
     def evaluate_signal(
         self, prediction: AIPrediction, balance_usd: float
@@ -93,26 +93,3 @@ class RiskManager:
         )
 
         return signal
-
-    def check_stop_losses(self, current_prices: dict[str, float]) -> list[Position]:
-        """Проверить stop-loss для открытых позиций."""
-        to_close: list[Position] = []
-        for pos in self.positions:
-            if pos.market_id in current_prices:
-                pos.current_price = current_prices[pos.market_id]
-                pos.pnl = (
-                    (pos.current_price - pos.entry_price)
-                    * pos.size_usd
-                    / pos.entry_price
-                )
-                pos.pnl_pct = (pos.current_price - pos.entry_price) / pos.entry_price
-
-                if pos.pnl_pct <= -settings.stop_loss_pct:
-                    logger.warning(
-                        "STOP-LOSS: %s | PnL: %.0f%% | закрываем",
-                        pos.question[:40],
-                        pos.pnl_pct * 100,
-                    )
-                    to_close.append(pos)
-
-        return to_close
