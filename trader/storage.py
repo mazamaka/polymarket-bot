@@ -49,15 +49,29 @@ class PortfolioStorage:
         return 100.0 - spent
 
     def save(self) -> None:
+        """Сохранить все данные с file locking для защиты от race conditions."""
+        import fcntl
+
         self.equity_curve = self.equity_curve[-500:]
-        positions_data = [p.model_dump(mode="json") for p in self.positions]
-        POSITIONS_FILE.write_text(
-            json.dumps(positions_data, indent=2, ensure_ascii=False, default=str)
-        )
-        HISTORY_FILE.write_text(
-            json.dumps(self.history, indent=2, ensure_ascii=False, default=str)
-        )
-        EQUITY_FILE.write_text(json.dumps(self.equity_curve, indent=2, default=str))
+        lock_file = DATA_DIR / ".storage.lock"
+
+        with open(lock_file, "w") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            try:
+                positions_data = [p.model_dump(mode="json") for p in self.positions]
+                POSITIONS_FILE.write_text(
+                    json.dumps(
+                        positions_data, indent=2, ensure_ascii=False, default=str
+                    )
+                )
+                HISTORY_FILE.write_text(
+                    json.dumps(self.history, indent=2, ensure_ascii=False, default=str)
+                )
+                EQUITY_FILE.write_text(
+                    json.dumps(self.equity_curve, indent=2, default=str)
+                )
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
     def _record_equity(self) -> None:
         """Записать точку на equity curve."""
