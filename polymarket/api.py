@@ -11,6 +11,40 @@ from polymarket.models import Event, Market
 logger = logging.getLogger(__name__)
 
 
+import re
+
+# Паттерны рынков где AI не имеет преимущества перед рынком
+_SPORTS_STATS_PATTERN = re.compile(
+    r"\b(points?|assists?|rebounds?|steals?|blocks?|goals?|tackles?|yards?|touchdowns?|strikeouts?|hits?|runs?)\s*(O/U|over/under|over|under)\s*\d",
+    re.IGNORECASE,
+)
+_SPORTS_MATCH_PATTERN = re.compile(
+    r"\b(vs\.?|versus)\b.*\b(BO[1-9]|game\s*\d|match|series)\b",
+    re.IGNORECASE,
+)
+_EXACT_WEATHER_PATTERN = re.compile(
+    r"\b(highest|lowest)\s+temperature\b.*\b(be\s+\d+|exactly)\b",
+    re.IGNORECASE,
+)
+_RANDOM_PHRASE_PATTERN = re.compile(
+    r'\bwill\s+\w+\s+say\s+"[^"]+"\s+during\b',
+    re.IGNORECASE,
+)
+
+
+def _is_low_edge_market(question: str) -> bool:
+    """Проверить, является ли рынок типом где AI не имеет преимущества."""
+    if _SPORTS_STATS_PATTERN.search(question):
+        return True
+    if _SPORTS_MATCH_PATTERN.search(question):
+        return True
+    if _EXACT_WEATHER_PATTERN.search(question):
+        return True
+    if _RANDOM_PHRASE_PATTERN.search(question):
+        return True
+    return False
+
+
 class PolymarketAPI:
     """Обёртка над Gamma API для получения рынков и событий."""
 
@@ -119,6 +153,7 @@ class PolymarketAPI:
 
         tradeable = []
         skipped_time = 0
+        skipped_type = 0
         for m in markets:
             if not (
                 m.active
@@ -126,6 +161,11 @@ class PolymarketAPI:
                 and m.liquidity >= min_liq
                 and m.clob_token_ids
             ):
+                continue
+
+            # Фильтр по типу рынка — скипаем то где AI не имеет преимущества
+            if _is_low_edge_market(m.question):
+                skipped_type += 1
                 continue
 
             # Фильтр по времени до закрытия
@@ -142,12 +182,13 @@ class PolymarketAPI:
             tradeable.append(m)
 
         logger.info(
-            "Отфильтровано %d торгуемых рынков (liq>$%.0f, %g-%gh до закрытия, пропущено по времени: %d)",
+            "Отфильтровано %d торгуемых рынков (liq>$%.0f, %g-%gh, пропущено: время=%d, тип=%d)",
             len(tradeable),
             min_liq,
             min_h,
             max_h,
             skipped_time,
+            skipped_type,
         )
         return tradeable
 

@@ -234,6 +234,7 @@ class TestRiskManager:
             mock_settings.max_concurrent_positions = 20
             mock_settings.min_confidence = 0.30
             mock_settings.min_edge_threshold = 0.08
+            mock_settings.max_edge_threshold = 0.35
 
             signal = rm.evaluate_signal(prediction, balance_usd=100.0)
 
@@ -255,6 +256,7 @@ class TestRiskManager:
             mock_settings.max_concurrent_positions = 20
             mock_settings.min_confidence = 0.30
             mock_settings.min_edge_threshold = 0.08
+            mock_settings.max_edge_threshold = 0.35
             mock_settings.max_total_exposure_pct = 0.30
             mock_settings.max_position_pct = 0.05
             mock_settings.default_trade_size_usd = 5.0
@@ -271,6 +273,7 @@ class TestRiskManager:
         with patch("trader.risk.settings") as mock_settings:
             mock_settings.min_confidence = 0.30
             mock_settings.min_edge_threshold = 0.08
+            mock_settings.max_edge_threshold = 0.35
 
             signal = rm.evaluate_signal(prediction, balance_usd=100.0)
 
@@ -284,6 +287,7 @@ class TestRiskManager:
         with patch("trader.risk.settings") as mock_settings:
             mock_settings.min_confidence = 0.30
             mock_settings.min_edge_threshold = 0.08
+            mock_settings.max_edge_threshold = 0.35
 
             signal = rm.evaluate_signal(prediction, balance_usd=100.0)
 
@@ -299,6 +303,7 @@ class TestRiskManager:
         with patch("trader.risk.settings") as mock_settings:
             mock_settings.min_confidence = 0.30
             mock_settings.min_edge_threshold = 0.08
+            mock_settings.max_edge_threshold = 0.35
 
             signal = rm.evaluate_signal(prediction, balance_usd=100.0)
 
@@ -306,20 +311,32 @@ class TestRiskManager:
 
     def test_blocks_max_exposure(self, make_position, make_prediction):
         """Блокирует при превышении общей экспозиции."""
-        # 5 позиций по $5 = $25 exposure, лимит = 100 * 0.30 = $30
-        # Но если поставим exposure высоко...
         positions = [
             make_position(market_id=f"market-{i}", size_usd=10.0) for i in range(3)
         ]
-        # $30 exposure >= $30 max -> блокировка
         rm = RiskManager(positions=positions)
         prediction = make_prediction(confidence=0.80, edge=0.20)
 
         with patch("trader.risk.settings") as mock_settings:
             mock_settings.min_confidence = 0.30
             mock_settings.min_edge_threshold = 0.08
+            mock_settings.max_edge_threshold = 0.35
             mock_settings.max_concurrent_positions = 20
             mock_settings.max_total_exposure_pct = 0.30
+
+            signal = rm.evaluate_signal(prediction, balance_usd=100.0)
+
+        assert signal is None
+
+    def test_blocks_excessive_edge(self, make_prediction):
+        """Блокирует при слишком большом edge (AI скорее ошибается)."""
+        rm = RiskManager(positions=[])
+        prediction = make_prediction(confidence=0.80, edge=0.50)
+
+        with patch("trader.risk.settings") as mock_settings:
+            mock_settings.min_confidence = 0.30
+            mock_settings.min_edge_threshold = 0.08
+            mock_settings.max_edge_threshold = 0.35
 
             signal = rm.evaluate_signal(prediction, balance_usd=100.0)
 

@@ -28,12 +28,22 @@ class RiskManager:
             )
             return None
 
-        # Проверка edge
+        # Проверка edge (минимальный)
         if abs(prediction.edge) < settings.min_edge_threshold:
             logger.info(
                 "SKIP: малый edge %.0f%% < %.0f%% для %s",
                 abs(prediction.edge) * 100,
                 settings.min_edge_threshold * 100,
+                prediction.question[:50],
+            )
+            return None
+
+        # Проверка edge (максимальный — слишком большой edge = AI скорее ошибается)
+        if abs(prediction.edge) > settings.max_edge_threshold:
+            logger.info(
+                "SKIP: edge %.0f%% > %.0f%% (вероятно AI ошибается) для %s",
+                abs(prediction.edge) * 100,
+                settings.max_edge_threshold * 100,
                 prediction.question[:50],
             )
             return None
