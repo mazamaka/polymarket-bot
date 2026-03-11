@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.git/
+.idea/
+data/
+logs/
+results/
+tests/
+local_db*/

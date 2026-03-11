@@ -1,0 +1,26 @@
+services:
+  polymarket-bot:
+    build: .
+    container_name: polymarket-bot
+    restart: unless-stopped
+    ports:
+      - "8899:8899"
+    volumes:
+      - polymarket-data:/app/data
+      - polymarket-logs:/app/logs
+      - polymarket-results:/app/results
+      - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json:ro
+    environment:
+      - TZ=UTC
+      - HOME=/root
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8899/api/portfolio"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  polymarket-data:
+  polymarket-logs:
+  polymarket-results:
