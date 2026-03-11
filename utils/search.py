@@ -1,6 +1,7 @@
 """Web search для обогащения контекста анализа рынков.
 
-Порядок: Tavily (оптимизирован для AI, даёт синтез) → DuckDuckGo (бесплатный fallback).
+Порядок: Tavily → Google News (pygooglenews) → DuckDuckGo fallback.
+Google News бесплатен и без лимитов, newspaper4k парсит полный текст статей.
 """
 
 import logging
@@ -13,9 +14,13 @@ def search_market_context(question: str, max_results: int = 5) -> str:
     """Поиск актуальных новостей по теме рынка.
 
     Tavily — primary (AI-оптимизированный, include_answer).
-    DuckDuckGo — fallback (бесплатно, без ключа).
+    Google News — secondary (бесплатно, без ключа, без лимитов).
+    DuckDuckGo — fallback.
     """
     context = _tavily_search(question, max_results)
+    if context:
+        return context
+    context = _google_news_search(question, max_results)
     if context:
         return context
     return _ddg_search(question, max_results)
@@ -59,6 +64,60 @@ def _tavily_search(question: str, max_results: int = 5) -> str:
 
     except Exception as e:
         logger.debug("Tavily search failed: %s", e)
+        return ""
+
+
+def _google_news_search(question: str, max_results: int = 5) -> str:
+    """Google News через pygooglenews — бесплатно, без API ключа, без лимитов."""
+    try:
+        from pygooglenews import GoogleNews
+
+        gn = GoogleNews(lang="en", country="US")
+        result = gn.search(question, when="7d")
+
+        entries = result.get("entries", [])
+        if not entries:
+            return ""
+
+        lines = ["**Recent news (Google News):**"]
+        for entry in entries[:max_results]:
+            title = entry.get("title", "")
+            published = entry.get("published", "")
+            source = entry.get("source", {}).get("title", "")
+            summary = entry.get("summary", "")
+            if summary:
+                # Google News summary содержит HTML — убираем теги и entities
+                import html
+                import re
+
+                summary = re.sub(r"<[^>]+>", "", html.unescape(summary))[:200]
+                lines.append(f"- [{published}] {title} ({source}): {summary}")
+            else:
+                lines.append(f"- [{published}] {title} ({source})")
+
+        logger.debug("Google News: %d результатов для: %s", len(entries), question[:50])
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.debug("Google News search failed: %s", e)
+        return ""
+
+
+def fetch_article_text(url: str, max_chars: int = 1000) -> str:
+    """Извлечь полный текст статьи через newspaper4k (для глубокого анализа)."""
+    if not url:
+        return ""
+    try:
+        from newspaper import Article
+
+        article = Article(url, request_timeout=10)
+        article.download()
+        article.parse()
+        text = article.text
+        if text and len(text) > 50:
+            return text[:max_chars].rsplit(" ", 1)[0] + "..."
+        return ""
+    except Exception:
         return ""
 
 

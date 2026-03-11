@@ -91,6 +91,17 @@
         .toast { position:fixed; bottom:16px; right:16px; padding:8px 16px; background:var(--card); border:1px solid var(--border); border-radius:8px; font-size:12px; display:none; z-index:100; box-shadow:0 8px 24px rgba(0,0,0,.5); }
         .toast.show { display:block; }
 
+        /* Settings panel */
+        .settings-panel { display:none; background:var(--card); border:1px solid var(--border); border-radius:8px; margin-bottom:16px; padding:16px; }
+        .settings-panel.open { display:block; }
+        .settings-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; }
+        .setting-item { display:flex; flex-direction:column; gap:4px; }
+        .setting-item label { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.3px; }
+        .setting-item input, .setting-item select { background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:6px 8px; color:var(--text); font-size:13px; width:100%; }
+        .setting-item input:focus { border-color:var(--blue); outline:none; }
+        .setting-item .hint { font-size:10px; color:var(--dim); }
+        .settings-actions { margin-top:12px; display:flex; gap:8px; justify-content:flex-end; }
+
         @media (max-width:768px) { body{padding:8px;} .stats{grid-template-columns:repeat(3,1fr);} .pos-grid{grid-template-columns:1fr;} }
     </style>
 </head>
@@ -103,6 +114,8 @@
         <button class="btn btn-go" onclick="runPaper()" id="btn-paper">Run Trading</button>
         <button class="btn" onclick="runAnalysis()" id="btn-analysis">Analysis</button>
         <button class="btn" onclick="toggleScheduler()" id="btn-sched">Start Auto</button>
+        <a class="btn" href="/scans">Scans</a>
+        <button class="btn" onclick="toggleSettings()" id="btn-settings">⚙ Settings</button>
     </div>
 </div>
 
@@ -111,6 +124,64 @@
     <span id="status-text">Connecting...</span>
     <span class="countdown" id="next-run"></span>
     <span id="ws-indicator" style="color:var(--dim)">WS: ...</span>
+</div>
+
+<!-- Settings Panel -->
+<div class="settings-panel" id="settings-panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <span style="font-weight:600;font-size:14px;">⚙ Trading Settings</span>
+        <span style="font-size:11px;color:var(--dim);">Changes apply to the next trading run</span>
+    </div>
+    <div class="settings-grid">
+        <div class="setting-item">
+            <label>Max hours to resolution</label>
+            <input type="number" id="set-max-hours" step="1" min="1">
+            <span class="hint">How far ahead to look (168 = 7 days)</span>
+        </div>
+        <div class="setting-item">
+            <label>Min liquidity ($)</label>
+            <input type="number" id="set-min-liq" step="100" min="0">
+        </div>
+        <div class="setting-item">
+            <label>Min edge (%)</label>
+            <input type="number" id="set-min-edge" step="1" min="1" max="50">
+            <span class="hint">Skip if AI edge below this</span>
+        </div>
+        <div class="setting-item">
+            <label>Max edge (%)</label>
+            <input type="number" id="set-max-edge" step="1" min="10" max="80">
+            <span class="hint">Skip if edge too high (AI wrong?)</span>
+        </div>
+        <div class="setting-item">
+            <label>Min confidence (%)</label>
+            <input type="number" id="set-min-conf" step="5" min="10" max="90">
+        </div>
+        <div class="setting-item">
+            <label>Max position (%)</label>
+            <input type="number" id="set-max-pos" step="1" min="1" max="50">
+            <span class="hint">% of balance per trade</span>
+        </div>
+        <div class="setting-item">
+            <label>Max total exposure (%)</label>
+            <input type="number" id="set-max-exp" step="5" min="10" max="100">
+        </div>
+        <div class="setting-item">
+            <label>Max concurrent positions</label>
+            <input type="number" id="set-max-positions" step="1" min="1" max="50">
+        </div>
+        <div class="setting-item">
+            <label>Stop-loss (%)</label>
+            <input type="number" id="set-sl" step="5" min="5" max="80">
+        </div>
+        <div class="setting-item">
+            <label>Take-profit (%)</label>
+            <input type="number" id="set-tp" step="5" min="5" max="200">
+        </div>
+    </div>
+    <div class="settings-actions">
+        <button class="btn" onclick="toggleSettings()">Cancel</button>
+        <button class="btn btn-go" onclick="saveSettings()">Save Settings</button>
+    </div>
 </div>
 
 <!-- Stats -->
@@ -424,7 +495,10 @@ function renderHistory(history) {
             h.side ? makeBadgeTd(isYes?'YES':'NO', isYes?'b-yes':'b-no') : makeTd(''),
             makeTd(h.entry_price != null ? h.entry_price.toFixed(4) : ''),
             makeTd(h.size_usd != null ? '$'+h.size_usd.toFixed(2) : ''),
-            makeTd(h.edge != null ? (h.edge>0?'+':'')+h.edge+'%' : (h.hold_hours!=null ? h.hold_hours+'h' : ''), 'color:var(--dim)'),
+            makeTd(
+                (h.edge != null ? (h.edge>0?'+':'')+h.edge+'%' : '') +
+                (h.hold_hours != null ? (h.edge != null ? ' · ' : '') + h.hold_hours+'h' : ''),
+                'color:var(--dim)'),
         ];
 
         // PnL
@@ -533,6 +607,53 @@ async function checkScheduler() {
     const r = await fetch('/api/scheduler/status'); const d = await r.json();
     schedulerRunning = d.running || d.monitor || d.trading;
     if (schedulerRunning) { el('btn-sched').textContent='Stop Auto'; el('btn-sched').classList.add('btn-go'); startCountdown(15); }
+}
+
+// ============ SETTINGS ============
+const settingsMap = {
+    'set-max-hours': 'max_hours_to_resolution',
+    'set-min-liq': 'min_liquidity_usd',
+    'set-min-edge': 'min_edge_threshold',
+    'set-max-edge': 'max_edge_threshold',
+    'set-min-conf': 'min_confidence',
+    'set-max-pos': 'max_position_pct',
+    'set-max-exp': 'max_total_exposure_pct',
+    'set-max-positions': 'max_concurrent_positions',
+    'set-sl': 'stop_loss_pct',
+    'set-tp': 'take_profit_pct',
+};
+
+async function loadSettings() {
+    const r = await fetch('/api/settings'); const d = await r.json();
+    el('set-max-hours').value = d.max_hours_to_resolution;
+    el('set-min-liq').value = d.min_liquidity_usd;
+    el('set-min-edge').value = d.min_edge_threshold;
+    el('set-max-edge').value = d.max_edge_threshold;
+    el('set-min-conf').value = d.min_confidence;
+    el('set-max-pos').value = d.max_position_pct;
+    el('set-max-exp').value = d.max_total_exposure_pct;
+    el('set-max-positions').value = d.max_concurrent_positions;
+    el('set-sl').value = d.stop_loss_pct;
+    el('set-tp').value = d.take_profit_pct;
+}
+
+function toggleSettings() {
+    const panel = el('settings-panel');
+    const isOpen = panel.classList.contains('open');
+    if (!isOpen) { loadSettings(); }
+    panel.classList.toggle('open');
+}
+
+async function saveSettings() {
+    const data = {};
+    for (const [elId, key] of Object.entries(settingsMap)) {
+        data[key] = parseFloat(el(elId).value);
+    }
+    const r = await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+    const d = await r.json();
+    showToast('Settings saved (' + d.updated.length + ' params)');
+    addLog('Settings updated: ' + d.updated.join(', '), 'trade');
+    el('settings-panel').classList.remove('open');
 }
 
 // ============ INIT ============

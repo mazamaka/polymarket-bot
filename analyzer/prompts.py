@@ -53,8 +53,9 @@ Rules:
 - Avoid round numbers unless truly warranted
 - Current date context matters — consider timing and deadlines
 - If ALL frameworks agree the market is fairly priced, say so — don't force an edge
-- CALIBRATION CHECK: if your final probability differs from market by >30%, you are likely wrong. Markets with real volume are informationally efficient. Re-examine your assumptions.
-- HUMILITY: you don't have access to insider info, live sports feeds, or real-time weather models. If the market has $1000+ liquidity, hundreds of traders have already analyzed this. Your edge comes from SYNTHESIS of public info, not from being smarter than the market.
+- CALIBRATION CHECK: if your final probability differs from market by >35%, double-check your reasoning carefully.
+- Your edge comes from SYNTHESIS of public info — fresh news, data trends, and logical analysis that the crowd may not have fully digested yet.
+- Markets ARE efficient on average, but they lag behind breaking news and underweight complex multi-factor reasoning. This is where your edge lives.
 - If you can't identify SPECIFIC EVIDENCE (news article, data point, logical argument) for your edge, set confidence below 0.3."""
 
 ANALYZE_MARKET_USER = """Analyze this prediction market using ALL FIVE probability frameworks.
@@ -111,9 +112,9 @@ Flag a market as worth_deeper_analysis=true when:
 - You see a SPECIFIC reason the price might be wrong (not just "I feel it should be different")
 - Current data contradicts the market price (e.g., crypto already above/below target)
 - Recent news that market hasn't priced in yet
-- |edge_estimate| is between 0.08 and 0.30 (too large = you're probably wrong)
+- |edge_estimate| >= 0.05 (even small edges are tradeable with enough confidence)
 
-Be calibrated but not paralyzed. It's OK to flag 2-5 markets per batch for deeper analysis."""
+Be AGGRESSIVE in flagging — it's better to flag too many markets (deeper analysis will filter). Aim for 3-8 markets per batch."""
 
 BATCH_SCREEN_USER = """Screen these prediction markets for potential mispricing.
 For each market, provide a QUICK assessment (1 sentence) and flag if it's worth deeper analysis.
@@ -140,8 +141,9 @@ Respond in JSON format:
 ```
 
 Rules:
-- Only flag as worth_deeper_analysis if |edge_estimate| > 0.10 AND you have SPECIFIC EVIDENCE (not just "gut feel")
+- Flag as worth_deeper_analysis if |edge_estimate| >= 0.05 AND you have a REASON (news, data, logic)
 - NEVER flag sports player stats, exact weather, or random word markets
-- If a market has >$5000 volume and price is 0.80+, it's probably correct — be very cautious
-- Edge > 0.30 is a RED FLAG that you're wrong, not that the market is wrong
-- Prefer markets where you found CONCRETE NEWS or DATA that contradicts the price"""
+- Even if a market has high volume, flag it if recent news shifts probability
+- Edge > 0.40 is a RED FLAG that you're wrong, not that the market is wrong
+- Prefer markets where you found CONCRETE NEWS or DATA that contradicts the price
+- When in doubt, FLAG IT — deeper analysis is cheap, missing opportunities is expensive"""

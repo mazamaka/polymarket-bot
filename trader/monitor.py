@@ -1,6 +1,7 @@
 """Мониторинг открытых позиций — обновление цен, P&L, stop-loss."""
 
 import logging
+from datetime import datetime, timezone
 
 from config import settings
 from polymarket.api import PolymarketAPI
@@ -86,17 +87,25 @@ def update_positions(storage: PortfolioStorage) -> None:
                 closed_count += 1
                 continue
 
-            # Рынок закрылся
-            if market.closed:
-                # Для resolved рынков: YES price обычно 1.0 или 0.0
-                # Если цена промежуточная (0.1-0.9) — API ещё не обновил
+            # Рынок закрылся (API пометил closed ИЛИ end_date прошёл)
+            is_expired = False
+            if pos.end_date:
+                try:
+                    end = datetime.fromisoformat(pos.end_date.replace("Z", "+00:00"))
+                    is_expired = datetime.now(tz=timezone.utc) > end
+                except (ValueError, TypeError):
+                    pass
+
+            if market.closed or is_expired:
                 logger.info(
-                    "RESOLVED: %s | side=%s | YES=%.2f | our_token=%.2f → PnL: $%.2f",
+                    "RESOLVED: %s | side=%s | YES=%.2f | our_token=%.2f → PnL: $%.2f | closed=%s expired=%s",
                     pos.question[:40],
                     pos.side,
                     yes_price,
                     current_token_price,
                     pos.pnl,
+                    market.closed,
+                    is_expired,
                 )
                 storage.close_position(pos.market_id, current_token_price)
                 closed_count += 1

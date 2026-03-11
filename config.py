@@ -13,16 +13,16 @@ class Settings(BaseSettings):
     # Risk Management
     max_position_pct: float = 0.05  # 5% баланса на 1 рынок
     max_total_exposure_pct: float = 0.30  # 30% общая экспозиция
-    min_edge_threshold: float = 0.08  # 8% минимальный edge
-    max_edge_threshold: float = 0.35  # 35% макс edge (больше = AI ошибается)
+    min_edge_threshold: float = 0.05  # 5% минимальный edge (было 8%)
+    max_edge_threshold: float = 0.40  # 40% макс edge (больше = AI ошибается)
     stop_loss_pct: float = 0.30  # -30% stop-loss
     take_profit_pct: float = 0.20  # +20% take-profit
     max_concurrent_positions: int = 20
-    min_confidence: float = 0.40  # мин. уверенность Claude
-    min_liquidity_usd: float = 500.0  # мин. ликвидность (для paper trading достаточно)
+    min_confidence: float = 0.30  # 30% мин. уверенность Claude (было 40%)
+    min_liquidity_usd: float = 300.0  # мин. ликвидность (снижена для охвата)
 
     # Timing
-    max_hours_to_resolution: float = 168.0  # 7 дней макс. до закрытия рынка
+    max_hours_to_resolution: float = 720.0  # 30 дней макс. до закрытия рынка
     min_hours_to_resolution: float = 0.0  # без ограничения снизу (paper trading)
 
     # Trading

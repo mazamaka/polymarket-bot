@@ -80,7 +80,7 @@ class ClaudeAnalyzer:
 
     def __init__(self) -> None:
         self.model = "opus"  # глубокий анализ — максимальное качество
-        self.screen_model = "sonnet"  # скрининг — быстро и умно
+        self.screen_model = "haiku"  # скрининг — быстрый первичный отбор
         self.prices = PriceProvider()
 
     def close(self) -> None:
@@ -120,7 +120,7 @@ class ClaudeAnalyzer:
         full_prompt = SUPERFORECASTER_SYSTEM + "\n\n" + user_prompt
 
         try:
-            content = _call_claude(full_prompt, model=self.model, timeout=180)
+            content = _call_claude(full_prompt, model=self.model, timeout=300)
             if not content:
                 return None
 
@@ -133,9 +133,9 @@ class ClaudeAnalyzer:
             edge = ai_prob - yes_price
             spread = max(0.0, min(1.0, float(parsed.get("framework_spread", 0))))
 
-            # Снижаем confidence при высоком разбросе фреймворков
-            if spread > 0.25 and confidence > 0.4:
-                confidence = min(confidence, 0.35)
+            # Снижаем confidence при очень высоком разбросе фреймворков
+            if spread > 0.30 and confidence > 0.5:
+                confidence = min(confidence, 0.40)
 
             if abs(edge) < settings.min_edge_threshold:
                 recommended_side = "SKIP"
@@ -205,9 +205,9 @@ class ClaudeAnalyzer:
         return predictions
 
     def batch_screen_markets(
-        self, markets: list[Market], batch_size: int = 30
+        self, markets: list[Market], batch_size: int = 15
     ) -> list[dict]:
-        """Быстрый скрининг рынков батчами (haiku — быстро и дёшево)."""
+        """Быстрый скрининг рынков батчами."""
         interesting: list[dict] = []
 
         for i in range(0, len(markets), batch_size):
@@ -221,7 +221,7 @@ class ClaudeAnalyzer:
 
             try:
                 content = _call_claude(
-                    full_prompt, model=self.screen_model, timeout=120
+                    full_prompt, model=self.screen_model, timeout=180
                 )
                 if not content:
                     continue

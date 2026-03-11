@@ -47,8 +47,14 @@ _main_loop: asyncio.AbstractEventLoop | None = None
 
 @app.on_event("startup")
 async def _capture_loop() -> None:
-    global _main_loop
+    global _main_loop, _monitor_task, _trading_task
     _main_loop = asyncio.get_running_loop()
+    # Auto-start scheduler for autonomous operation
+    _monitor_task = asyncio.create_task(_price_monitor_loop(180))
+    _trading_task = asyncio.create_task(_trading_loop(15))
+    logger.info(
+        "Auto-scheduler started: price monitor (3 min) + trading scanner (15 min)"
+    )
 
 
 def sync_broadcast(event: str, data: dict | str = "") -> None:
@@ -114,6 +120,66 @@ async def dashboard(request: Request) -> HTMLResponse:
             "bot_status": bot_status,
         },
     )
+
+
+@app.get("/api/settings")
+async def api_get_settings() -> JSONResponse:
+    from config import settings
+
+    return JSONResponse(
+        {
+            "max_hours_to_resolution": settings.max_hours_to_resolution,
+            "min_liquidity_usd": settings.min_liquidity_usd,
+            "min_edge_threshold": settings.min_edge_threshold * 100,
+            "max_edge_threshold": settings.max_edge_threshold * 100,
+            "min_confidence": settings.min_confidence * 100,
+            "max_position_pct": settings.max_position_pct * 100,
+            "max_total_exposure_pct": settings.max_total_exposure_pct * 100,
+            "max_concurrent_positions": settings.max_concurrent_positions,
+            "stop_loss_pct": settings.stop_loss_pct * 100,
+            "take_profit_pct": settings.take_profit_pct * 100,
+        }
+    )
+
+
+@app.post("/api/settings")
+async def api_update_settings(request: Request) -> JSONResponse:
+    from config import settings
+
+    data = await request.json()
+    mapping = {
+        "max_hours_to_resolution": ("max_hours_to_resolution", 1.0),
+        "min_liquidity_usd": ("min_liquidity_usd", 1.0),
+        "min_edge_threshold": ("min_edge_threshold", 0.01),
+        "max_edge_threshold": ("max_edge_threshold", 0.01),
+        "min_confidence": ("min_confidence", 0.01),
+        "max_position_pct": ("max_position_pct", 0.01),
+        "max_total_exposure_pct": ("max_total_exposure_pct", 0.01),
+        "max_concurrent_positions": ("max_concurrent_positions", 1.0),
+        "stop_loss_pct": ("stop_loss_pct", 0.01),
+        "take_profit_pct": ("take_profit_pct", 0.01),
+    }
+    updated = []
+    for key, value in data.items():
+        if key in mapping:
+            attr, mult = mapping[key]
+            setattr(settings, attr, float(value) * mult)
+            updated.append(key)
+    logger.info("Settings updated: %s", updated)
+    sync_broadcast("log", f"Settings updated: {', '.join(updated)}")
+    return JSONResponse({"status": "ok", "updated": updated})
+
+
+@app.get("/api/scans")
+async def api_scans() -> JSONResponse:
+    from trader.scan_log import scan_logger
+
+    return JSONResponse(scan_logger.get_scans(limit=30))
+
+
+@app.get("/scans", response_class=HTMLResponse)
+async def scans_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse("scans.html", {"request": request})
 
 
 @app.get("/api/portfolio")

@@ -152,6 +152,8 @@ class PortfolioStorage:
                 "exit_price": exit_price,
                 "size_usd": pos.size_usd,
                 "pnl": round(pnl, 4),
+                "edge": round(pos.edge * 100, 1),
+                "confidence": round(pos.confidence * 100, 0),
                 "hold_hours": round(
                     (datetime.now() - pos.opened_at).total_seconds() / 3600, 1
                 ),

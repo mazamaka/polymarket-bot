@@ -141,6 +141,10 @@ def run_paper_trading(
     _log(f"Баланс: ${storage.balance:.2f} | Открытых позиций: {len(storage.positions)}")
 
     try:  # noqa: E501 — large try block, all resources closed in finally
+        from trader.scan_log import scan_logger
+
+        scan_logger.start_scan()
+
         # 1. Сначала обновляем существующие позиции
         if storage.positions:
             _log(f"Обновляем {len(storage.positions)} открытых позиций...")
@@ -150,9 +154,16 @@ def run_paper_trading(
         markets = api.get_active_markets(max_markets=max_markets)
         tradeable = api.filter_tradeable_markets(markets)
         _log(f"Загружено {len(markets)} рынков → {len(tradeable)} прошли фильтр")
+        scan_logger.set_filter_stats(
+            loaded=len(markets),
+            filtered=len(tradeable),
+            skipped_time=len(markets) - len(tradeable),
+            skipped_type=0,
+        )
 
         if not tradeable:
             _log("Нет торгуемых рынков")
+            scan_logger.finish_scan()
             return
 
         # 3. Скрининг (исключаем рынки где уже есть позиция)
@@ -163,6 +174,30 @@ def run_paper_trading(
         )
 
         interesting = analyzer.batch_screen_markets(to_screen)
+
+        # Логируем все скринированные рынки
+        interesting_ids = {x.get("market_id", "") for x in interesting}
+        for m in to_screen:
+            yes_price = m.outcome_prices[0] if m.outcome_prices else 0.5
+            is_interesting = m.id in interesting_ids
+            reason_item = next(
+                (x for x in interesting if x.get("market_id") == m.id), None
+            )
+            reason = (
+                reason_item.get("reason", "")
+                if reason_item
+                else "Not flagged by screener"
+            )
+            scan_logger.add_screened_market(
+                market_id=m.id,
+                question=m.question,
+                yes_price=yes_price,
+                volume=m.volume,
+                liquidity=m.liquidity,
+                interesting=is_interesting,
+                reason=reason,
+            )
+
         if not interesting:
             _log("Нет новых интересных рынков")
         else:
@@ -178,7 +213,7 @@ def run_paper_trading(
                 f"Найдено {len(interesting)} потенциальных → глубокий анализ {len(markets_to_analyze)} рынков..."
             )
             predictions = analyzer.analyze_markets_parallel(
-                markets_to_analyze, max_workers=3
+                markets_to_analyze, max_workers=2
             )
 
             # 5. Торговля по результатам
@@ -193,6 +228,30 @@ def run_paper_trading(
                     continue
 
                 signal = risk_mgr.evaluate_signal(prediction, storage.balance)
+                skip_reason = ""
+                if not signal:
+                    skip_reason = (
+                        f"edge {abs(prediction.edge) * 100:.0f}%<{settings.min_edge_threshold * 100:.0f}%"
+                        if abs(prediction.edge) < settings.min_edge_threshold
+                        else f"conf {prediction.confidence * 100:.0f}%<{settings.min_confidence * 100:.0f}%"
+                        if prediction.confidence < settings.min_confidence
+                        else f"edge {abs(prediction.edge) * 100:.0f}%>{settings.max_edge_threshold * 100:.0f}% (too high)"
+                        if abs(prediction.edge) > settings.max_edge_threshold
+                        else "risk limit"
+                    )
+
+                scan_logger.add_analyzed_market(
+                    market_id=prediction.market_id,
+                    question=prediction.question,
+                    ai_prob=prediction.ai_probability,
+                    market_prob=prediction.market_probability,
+                    edge=prediction.edge,
+                    confidence=prediction.confidence,
+                    spread=0,
+                    side=prediction.recommended_side,
+                    skip_reason=skip_reason,
+                )
+
                 if not signal:
                     _log(
                         f"SKIP: {prediction.question[:50]} | "
@@ -220,6 +279,12 @@ def run_paper_trading(
                 )
                 new_balance = storage.balance - signal.size_usd
                 storage.add_position(position, new_balance)
+                scan_logger.add_trade(
+                    market_id=signal.market_id,
+                    side=signal.prediction.recommended_side,
+                    price=signal.price,
+                    size=signal.size_usd,
+                )
                 _log(
                     f"OPEN: {signal.prediction.recommended_side} "
                     f"{signal.prediction.question[:50]} @ {signal.price:.4f} | "
@@ -284,6 +349,7 @@ def run_paper_trading(
             logger.error("Correlation scan error: %s", e)
 
         # 7. Сводка
+        scan_logger.finish_scan()
         summary = storage.get_summary()
         logger.info("=" * 60)
         logger.info("ПОРТФЕЛЬ:")

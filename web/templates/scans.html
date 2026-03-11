@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polymarket Bot — Scan Analysis</title>
+    <style>
+        :root { --bg:#0d1117; --card:#161b22; --card2:#1c2129; --border:#30363d; --text:#e6edf3; --dim:#8b949e; --green:#3fb950; --red:#f85149; --blue:#58a6ff; --yellow:#d29922; --purple:#bc8cff; }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--bg); color:var(--text); line-height:1.5; padding:16px; max-width:1440px; margin:0 auto; }
+
+        .header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid var(--border); flex-wrap:wrap; gap:10px; }
+        .header h1 { font-size:20px; } .header h1 span { color:var(--blue); }
+        .nav { display:flex; gap:8px; }
+        .btn { padding:5px 12px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--text); cursor:pointer; font-size:12px; transition:all .15s; text-decoration:none; }
+        .btn:hover { border-color:var(--blue); color:var(--blue); }
+        .btn.active { background:var(--blue); color:#fff; border-color:var(--blue); }
+
+        .section { background:var(--card); border:1px solid var(--border); border-radius:8px; margin-bottom:16px; overflow:hidden; }
+
+        .scan-selector { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; align-items:center; }
+        .scan-selector select { background:var(--card); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:12px; min-width:300px; }
+        .scan-selector select:focus { border-color:var(--blue); outline:none; }
+
+        .funnel { display:flex; gap:4px; align-items:center; margin-bottom:16px; flex-wrap:wrap; }
+        .funnel-step { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:10px 16px; text-align:center; flex:1; min-width:120px; }
+        .funnel-step .num { font-size:22px; font-weight:700; }
+        .funnel-step .label { font-size:10px; color:var(--dim); text-transform:uppercase; }
+        .funnel-arrow { color:var(--dim); font-size:18px; }
+
+        .tabs { display:flex; gap:4px; margin-bottom:0; }
+        .tab { padding:6px 14px; border:1px solid var(--border); border-radius:6px 6px 0 0; background:var(--card2); color:var(--dim); cursor:pointer; font-size:12px; border-bottom:none; }
+        .tab.active { background:var(--card); color:var(--text); font-weight:600; }
+
+        table { width:100%; border-collapse:collapse; }
+        th { text-align:left; padding:6px 10px; font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:.3px; border-bottom:1px solid var(--border); background:rgba(0,0,0,.2); position:sticky; top:0; }
+        td { padding:6px 10px; font-size:12px; border-bottom:1px solid var(--border); }
+        tr:hover { background:rgba(88,166,255,.04); }
+        tr.interesting { background:rgba(63,185,80,.06); }
+        tr.traded { background:rgba(63,185,80,.12); }
+
+        .badge { display:inline-block; padding:1px 7px; border-radius:10px; font-size:10px; font-weight:600; }
+        .b-pass { background:rgba(63,185,80,.12); color:var(--green); }
+        .b-fail { background:rgba(139,148,158,.12); color:var(--dim); }
+        .b-trade { background:rgba(88,166,255,.12); color:var(--blue); }
+        .b-skip { background:rgba(210,153,34,.12); color:var(--yellow); }
+
+        .green { color:var(--green); } .red { color:var(--red); } .blue { color:var(--blue); } .yellow { color:var(--yellow); }
+        .table-wrap { max-height:500px; overflow-y:auto; }
+        .empty { padding:30px; text-align:center; color:var(--dim); font-size:14px; }
+
+        @media (max-width:768px) { body{padding:8px;} .funnel{flex-direction:column;} .funnel-arrow{transform:rotate(90deg);} }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1><span>Polymarket</span> Scan Analysis</h1>
+    <div class="nav">
+        <a class="btn" href="/">Dashboard</a>
+        <a class="btn active" href="/scans">Scans</a>
+    </div>
+</div>
+
+<div class="scan-selector">
+    <label style="font-size:12px;color:var(--dim);">Select scan:</label>
+    <select id="scan-select" onchange="loadScan()"></select>
+    <button class="btn" onclick="refreshScans()">Refresh</button>
+</div>
+
+<div class="funnel" id="funnel"></div>
+
+<div class="tabs">
+    <div class="tab active" onclick="showTab('screened')" id="tab-screened">All Screened</div>
+    <div class="tab" onclick="showTab('analyzed')" id="tab-analyzed">Deep Analysis</div>
+    <div class="tab" onclick="showTab('trades')" id="tab-trades">Trades</div>
+</div>
+
+<div class="section">
+    <div id="content"></div>
+</div>
+
+<script>
+let scansData = [];
+let currentScan = null;
+let currentTab = 'screened';
+
+function el(id) { return document.getElementById(id); }
+function ce(tag) { return document.createElement(tag); }
+function txt(e, t) { e.textContent = t; }
+
+function makeTd(text, style) { const td = ce('td'); txt(td, text); if (style) td.setAttribute('style', style); return td; }
+function makeBadge(text, cls) { const s = ce('span'); s.className = 'badge ' + cls; txt(s, text); return s; }
+
+async function refreshScans() {
+    const r = await fetch('/api/scans');
+    scansData = await r.json();
+    const sel = el('scan-select');
+    while (sel.firstChild) sel.removeChild(sel.firstChild);
+    if (!scansData.length) {
+        const opt = ce('option'); txt(opt, 'No scans yet -- run trading first'); sel.appendChild(opt);
+        return;
+    }
+    scansData.forEach(function(s, i) {
+        const opt = ce('option');
+        opt.value = i;
+        const ts = (s.timestamp || '').replace('T', ' ').slice(0, 19);
+        const screened = (s.screened || []).length;
+        const analyzed = (s.analyzed || []).length;
+        const trades = (s.trades || []).length;
+        txt(opt, ts + ' -- ' + screened + ' screened, ' + analyzed + ' analyzed, ' + trades + ' trades');
+        sel.appendChild(opt);
+    });
+    loadScan();
+}
+
+function loadScan() {
+    const idx = parseInt(el('scan-select').value) || 0;
+    currentScan = scansData[idx];
+    if (!currentScan) return;
+    renderFunnel();
+    showTab(currentTab);
+}
+
+function renderFunnel() {
+    const f = el('funnel');
+    while (f.firstChild) f.removeChild(f.firstChild);
+    const s = currentScan;
+    const screened = (s.screened || []).length;
+    const interesting = (s.screened || []).filter(function(x) { return x.interesting; }).length;
+    const analyzed = (s.analyzed || []).length;
+    const traded = (s.trades || []).length;
+
+    var steps = [
+        { num: s.markets_loaded || 0, label: 'Loaded' },
+        { num: s.markets_filtered || screened, label: 'After filters' },
+        { num: screened, label: 'Screened' },
+        { num: interesting, label: 'Interesting' },
+        { num: analyzed, label: 'Analyzed' },
+        { num: traded, label: 'Traded' },
+    ];
+
+    steps.forEach(function(step, i) {
+        if (i > 0) {
+            var arr = ce('span'); arr.className = 'funnel-arrow'; txt(arr, '\u2192'); f.appendChild(arr);
+        }
+        var div = ce('div'); div.className = 'funnel-step';
+        var num = ce('div'); num.className = 'num';
+        num.style.color = step.num > 0 ? (i === steps.length - 1 ? 'var(--green)' : 'var(--text)') : 'var(--dim)';
+        txt(num, step.num);
+        var lbl = ce('div'); lbl.className = 'label'; txt(lbl, step.label);
+        div.appendChild(num); div.appendChild(lbl);
+        f.appendChild(div);
+    });
+}
+
+function showTab(tab) {
+    currentTab = tab;
+    document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+    el('tab-' + tab).classList.add('active');
+
+    if (tab === 'screened') renderScreened();
+    else if (tab === 'analyzed') renderAnalyzed();
+    else renderTrades();
+}
+
+function renderScreened() {
+    var body = el('content');
+    while (body.firstChild) body.removeChild(body.firstChild);
+    var items = currentScan.screened || [];
+    if (!items.length) { var d = ce('div'); d.className = 'empty'; txt(d, 'No screening data in this scan'); body.appendChild(d); return; }
+
+    var table = ce('table');
+    var thead = ce('thead'); var hr = ce('tr');
+    ['Status', 'Market', 'YES Price', 'Volume', 'Liquidity', 'Reason'].forEach(function(h) {
+        var th = ce('th'); txt(th, h); hr.appendChild(th);
+    });
+    thead.appendChild(hr); table.appendChild(thead);
+
+    var tbody = ce('tbody');
+    var sorted = items.slice().sort(function(a, b) { return (b.interesting ? 1 : 0) - (a.interesting ? 1 : 0); });
+
+    sorted.forEach(function(m) {
+        var tr = ce('tr');
+        if (m.interesting) tr.className = 'interesting';
+
+        var statusTd = ce('td');
+        statusTd.appendChild(makeBadge(m.interesting ? 'INTERESTING' : 'PASSED', m.interesting ? 'b-pass' : 'b-fail'));
+        tr.appendChild(statusTd);
+
+        tr.appendChild(makeTd(m.question, 'max-width:400px'));
+        tr.appendChild(makeTd((m.yes_price * 100).toFixed(0) + '%'));
+        tr.appendChild(makeTd('$' + formatK(m.volume), 'color:var(--dim)'));
+        tr.appendChild(makeTd('$' + formatK(m.liquidity), 'color:var(--dim)'));
+        tr.appendChild(makeTd(m.reason || '', 'color:var(--dim);font-size:11px;max-width:300px'));
+
+        tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    var wrap = ce('div'); wrap.className = 'table-wrap';
+    wrap.appendChild(table);
+    body.appendChild(wrap);
+}
+
+function renderAnalyzed() {
+    var body = el('content');
+    while (body.firstChild) body.removeChild(body.firstChild);
+    var items = currentScan.analyzed || [];
+    if (!items.length) { var d = ce('div'); d.className = 'empty'; txt(d, 'No deep analysis in this scan'); body.appendChild(d); return; }
+
+    var table = ce('table');
+    var thead = ce('thead'); var hr = ce('tr');
+    ['Result', 'Market', 'AI Prob', 'Mkt Prob', 'Edge', 'Confidence', 'Side', 'Skip Reason'].forEach(function(h) {
+        var th = ce('th'); txt(th, h); hr.appendChild(th);
+    });
+    thead.appendChild(hr); table.appendChild(thead);
+
+    var tbody = ce('tbody');
+    var sorted = items.slice().sort(function(a, b) {
+        if (a.traded !== b.traded) return b.traded ? 1 : -1;
+        return Math.abs(b.edge) - Math.abs(a.edge);
+    });
+
+    sorted.forEach(function(m) {
+        var tr = ce('tr');
+        tr.className = m.traded ? 'traded' : '';
+
+        var statusTd = ce('td');
+        statusTd.appendChild(makeBadge(m.traded ? 'TRADED' : 'SKIPPED', m.traded ? 'b-trade' : 'b-skip'));
+        tr.appendChild(statusTd);
+
+        tr.appendChild(makeTd(m.question, 'max-width:350px'));
+        tr.appendChild(makeTd(m.ai_prob + '%'));
+        tr.appendChild(makeTd(m.market_prob + '%'));
+
+        var edgeColor = Math.abs(m.edge) >= 8 ? (m.edge > 0 ? 'color:var(--green);font-weight:600' : 'color:var(--red);font-weight:600') : 'color:var(--dim)';
+        tr.appendChild(makeTd((m.edge > 0 ? '+' : '') + m.edge + '%', edgeColor));
+
+        var confStyle = m.confidence >= 40 ? '' : 'color:var(--dim)';
+        tr.appendChild(makeTd(m.confidence + '%', confStyle));
+
+        var sideTd = ce('td');
+        if (m.side && m.side !== 'SKIP') {
+            sideTd.appendChild(makeBadge(m.side.replace('BUY_', ''), m.side.includes('YES') ? 'b-pass' : 'b-skip'));
+        }
+        tr.appendChild(sideTd);
+
+        tr.appendChild(makeTd(m.skip_reason || '', 'color:var(--yellow);font-size:11px'));
+
+        tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    var wrap = ce('div'); wrap.className = 'table-wrap';
+    wrap.appendChild(table);
+    body.appendChild(wrap);
+}
+
+function renderTrades() {
+    var body = el('content');
+    while (body.firstChild) body.removeChild(body.firstChild);
+    var items = currentScan.trades || [];
+    if (!items.length) { var d = ce('div'); d.className = 'empty'; txt(d, 'No trades in this scan'); body.appendChild(d); return; }
+
+    var table = ce('table');
+    var thead = ce('thead'); var hr = ce('tr');
+    ['Market ID', 'Side', 'Price', 'Size'].forEach(function(h) {
+        var th = ce('th'); txt(th, h); hr.appendChild(th);
+    });
+    thead.appendChild(hr); table.appendChild(thead);
+
+    var tbody = ce('tbody');
+    items.forEach(function(t) {
+        var tr = ce('tr'); tr.className = 'traded';
+        [t.market_id, t.side, t.price.toFixed(4), '$' + t.size.toFixed(2)].forEach(function(v) {
+            tr.appendChild(makeTd(v));
+        });
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    body.appendChild(table);
+}
+
+function formatK(n) {
+    if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n/1000).toFixed(0) + 'K';
+    return Math.round(n).toString();
+}
+
+refreshScans();
+</script>
+</body>
+</html>
