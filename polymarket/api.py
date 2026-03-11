@@ -101,12 +101,12 @@ class PolymarketAPI:
         )
         return all_markets
 
-    def get_active_events(self, limit: int = 100) -> list[Event]:
-        """Получить активные события."""
+    def get_active_events(self, limit: int = 100, max_events: int = 500) -> list[Event]:
+        """Получить активные события (с ограничением)."""
         all_events: list[Event] = []
         offset = 0
 
-        while True:
+        while len(all_events) < max_events:
             params = {
                 "active": "true",
                 "closed": "false",
@@ -130,7 +130,10 @@ class PolymarketAPI:
                 break
             offset += limit
 
-        logger.info("Получено %d активных событий", len(all_events))
+        all_events = all_events[:max_events]
+        logger.info(
+            "Получено %d активных событий (max %d)", len(all_events), max_events
+        )
         return all_events
 
     def get_market_by_id(self, market_id: str) -> Market | None:

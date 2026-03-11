@@ -203,7 +203,8 @@ def scan_correlations(
 
     api = PolymarketAPI()
     try:
-        events = api.get_active_events(limit=100)
+        # Ограничиваем до 500 events чтобы не грузить все 8000+ каждые 15 мин
+        events = api.get_active_events(limit=100, max_events=500)
         multi = [e for e in events if len(e.markets) >= 2]
         _log(f"Корреляции: {len(events)} events, {len(multi)} с множеством рынков")
 

@@ -189,7 +189,7 @@ def _run_paper_bg() -> None:
         sync_broadcast("history", list(reversed(storage.history[-30:])))
         _set_status("idle", "Paper trading completed")
     except Exception as e:
-        logger.error("Paper trading error: %s", e)
+        logger.exception("Paper trading error: %s", e)
         _set_status("idle", f"Error: {e}")
 
 
@@ -205,7 +205,7 @@ def _run_paper_bg_fast() -> None:
         sync_broadcast("history", list(reversed(storage.history[-30:])))
         _set_status("idle", "Auto paper trading completed")
     except Exception as e:
-        logger.error("Auto paper trading error: %s", e)
+        logger.exception("Auto paper trading error: %s", e)
         _set_status("idle", f"Error: {e}")
 
 

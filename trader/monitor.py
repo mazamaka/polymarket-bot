@@ -88,10 +88,15 @@ def update_positions(storage: PortfolioStorage) -> None:
 
             # Рынок закрылся
             if market.closed:
+                # Для resolved рынков: YES price обычно 1.0 или 0.0
+                # Если цена промежуточная (0.1-0.9) — API ещё не обновил
                 logger.info(
-                    "RESOLVED: %s закрылся по цене %.2f",
+                    "RESOLVED: %s | side=%s | YES=%.2f | our_token=%.2f → PnL: $%.2f",
                     pos.question[:40],
+                    pos.side,
+                    yes_price,
                     current_token_price,
+                    pos.pnl,
                 )
                 storage.close_position(pos.market_id, current_token_price)
                 closed_count += 1

@@ -83,6 +83,10 @@ class ClaudeAnalyzer:
         self.screen_model = "sonnet"  # скрининг — быстро и умно
         self.prices = PriceProvider()
 
+    def close(self) -> None:
+        """Закрыть HTTP клиенты."""
+        self.prices.close()
+
     def analyze_market(self, market: Market) -> AIPrediction | None:
         """Глубокий анализ одного рынка."""
         yes_price = market.outcome_prices[0] if market.outcome_prices else 0.5
@@ -116,7 +120,7 @@ class ClaudeAnalyzer:
         full_prompt = SUPERFORECASTER_SYSTEM + "\n\n" + user_prompt
 
         try:
-            content = _call_claude(full_prompt, model=self.model, timeout=120)
+            content = _call_claude(full_prompt, model=self.model, timeout=180)
             if not content:
                 return None
 
@@ -124,10 +128,10 @@ class ClaudeAnalyzer:
             if not parsed:
                 return None
 
-            ai_prob = float(parsed["probability"])
-            confidence = float(parsed["confidence"])
+            ai_prob = max(0.0, min(1.0, float(parsed.get("probability", 0.5))))
+            confidence = max(0.0, min(1.0, float(parsed.get("confidence", 0.3))))
             edge = ai_prob - yes_price
-            spread = float(parsed.get("framework_spread", 0))
+            spread = max(0.0, min(1.0, float(parsed.get("framework_spread", 0))))
 
             # Снижаем confidence при высоком разбросе фреймворков
             if spread > 0.25 and confidence > 0.4:

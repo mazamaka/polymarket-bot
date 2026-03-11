@@ -27,18 +27,30 @@ class PortfolioStorage:
 
     def _load_positions(self) -> list[Position]:
         if POSITIONS_FILE.exists():
-            data = json.loads(POSITIONS_FILE.read_text())
-            return [Position(**p) for p in data]
+            try:
+                data = json.loads(POSITIONS_FILE.read_text())
+                return [Position(**p) for p in data]
+            except (json.JSONDecodeError, TypeError, KeyError) as e:
+                logger.error("Corrupted positions.json, backing up: %s", e)
+                POSITIONS_FILE.rename(POSITIONS_FILE.with_suffix(".json.bak"))
         return []
 
     def _load_history(self) -> list[dict]:
         if HISTORY_FILE.exists():
-            return json.loads(HISTORY_FILE.read_text())
+            try:
+                return json.loads(HISTORY_FILE.read_text())
+            except json.JSONDecodeError as e:
+                logger.error("Corrupted trade_history.json, backing up: %s", e)
+                HISTORY_FILE.rename(HISTORY_FILE.with_suffix(".json.bak"))
         return []
 
     def _load_equity(self) -> list[dict]:
         if EQUITY_FILE.exists():
-            return json.loads(EQUITY_FILE.read_text())
+            try:
+                return json.loads(EQUITY_FILE.read_text())
+            except json.JSONDecodeError as e:
+                logger.error("Corrupted equity_curve.json, backing up: %s", e)
+                EQUITY_FILE.rename(EQUITY_FILE.with_suffix(".json.bak"))
         return [{"ts": datetime.now().isoformat(), "equity": 100.0}]
 
     def _calc_balance(self) -> float:
@@ -107,6 +119,15 @@ class PortfolioStorage:
         )
         self._record_equity()
         self.save()
+        logger.info(
+            "STORED OPEN: %s | %s @ %.4f | $%.2f | bal: $%.2f | positions: %d",
+            position.side,
+            position.question[:40],
+            position.entry_price,
+            position.size_usd,
+            balance_after,
+            len(self.positions),
+        )
 
     def close_position(self, market_id: str, exit_price: float) -> float:
         """Закрыть позицию. exit_price = цена нашего токена (YES или NO)."""
@@ -140,6 +161,15 @@ class PortfolioStorage:
         )
         self._record_equity()
         self.save()
+        logger.info(
+            "STORED CLOSE: %s @ entry %.4f → exit %.4f | P&L: $%.2f | bal: $%.2f | positions: %d",
+            pos.question[:40],
+            pos.entry_price,
+            exit_price,
+            pnl,
+            self.balance,
+            len(self.positions),
+        )
         return pnl
 
     def get_open_market_ids(self) -> set[str]:

@@ -10,6 +10,7 @@ Web UI: --web
 import argparse
 import json
 import logging
+import logging.handlers
 import sys
 import time
 from datetime import datetime
@@ -23,10 +24,22 @@ from trader.monitor import update_positions
 from trader.risk import RiskManager
 from trader.storage import PortfolioStorage
 
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)-7s | %(message)s",
-    datefmt="%H:%M:%S",
+    format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),
+        logging.handlers.RotatingFileHandler(
+            LOG_DIR / "bot.log",
+            maxBytes=10 * 1024 * 1024,  # 10 MB
+            backupCount=5,
+            encoding="utf-8",
+        ),
+    ],
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -127,7 +140,7 @@ def run_paper_trading(
 
     _log(f"Баланс: ${storage.balance:.2f} | Открытых позиций: {len(storage.positions)}")
 
-    try:
+    try:  # noqa: E501 — large try block, all resources closed in finally
         # 1. Сначала обновляем существующие позиции
         if storage.positions:
             _log(f"Обновляем {len(storage.positions)} открытых позиций...")
@@ -234,7 +247,7 @@ def run_paper_trading(
                 corr_prediction = AIPrediction(
                     market_id=buy_market.id,
                     question=buy_market.question,
-                    ai_probability=yes_price + abs(sig.actual_spread),
+                    ai_probability=min(1.0, yes_price + abs(sig.actual_spread)),
                     market_probability=yes_price,
                     confidence=sig.confidence,
                     edge=abs(sig.actual_spread),
@@ -278,6 +291,7 @@ def run_paper_trading(
 
     finally:
         api.close()
+        analyzer.close()
 
 
 def run_monitor() -> None:
@@ -396,7 +410,7 @@ def run_scheduler(interval_min: int, max_markets: int) -> None:
         except KeyboardInterrupt:
             raise
         except Exception as e:
-            logger.error("Ошибка в run: %s", e)
+            logger.exception("Ошибка в run: %s", e)
 
         logger.info("Следующий запуск через %d мин...", interval_min)
         try:
