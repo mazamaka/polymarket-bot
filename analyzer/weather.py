@@ -1,8 +1,11 @@
 """Weather Analyzer — алгоритмический анализ погодных рынков Polymarket.
 
-Использует Open-Meteo Ensemble API (бесплатно, без ключа) для получения
-ансамблевого прогноза (31-51 участник) и вычисления вероятности через
-эмпирическую CDF. Сравнивает с рыночной ценой для поиска edge.
+Использует Open-Meteo Ensemble API (бесплатно, без ключа) с 4 моделями:
+- GFS (31 member) + ECMWF IFS (51 member) + ICON (40 member) + GEM (21 member)
+= ~143 ensemble members для эмпирической CDF вероятности.
+
+Дополнительно: NWS API (api.weather.gov) для US городов как cross-reference.
+Сравнивает с рыночной ценой для поиска edge.
 """
 
 import logging
@@ -19,7 +22,52 @@ from polymarket.models import AIPrediction, Market
 logger = logging.getLogger(__name__)
 
 ENSEMBLE_API_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
+NWS_API_URL = "https://api.weather.gov"
 NEWS_SERVICE_URL = settings.news_service_url
+
+# US города для NWS API (работает только для США)
+US_CITIES = {
+    "new york",
+    "nyc",
+    "new york city",
+    "los angeles",
+    "la",
+    "chicago",
+    "miami",
+    "houston",
+    "phoenix",
+    "philadelphia",
+    "san antonio",
+    "san diego",
+    "dallas",
+    "austin",
+    "denver",
+    "washington",
+    "dc",
+    "seattle",
+    "boston",
+    "nashville",
+    "atlanta",
+    "san francisco",
+    "sf",
+    "las vegas",
+    "detroit",
+    "minneapolis",
+    "charlotte",
+    "portland",
+    "orlando",
+    "tampa",
+    "sacramento",
+    "kansas city",
+    "salt lake city",
+    "raleigh",
+    "memphis",
+    "oklahoma city",
+    "milwaukee",
+    "buffalo",
+    "anchorage",
+    "honolulu",
+}
 
 # Города Polymarket → координаты
 CITY_COORDS: dict[str, tuple[float, float]] = {
@@ -343,8 +391,59 @@ def parse_weather_market(market: Market) -> WeatherMarketInfo | None:
     )
 
 
-def fetch_ensemble_forecast(
+def fetch_nws_forecast(
     lat: float, lon: float, target_date: datetime, temp_type: str
+) -> float | None:
+    """Получить прогноз от NWS API (только US) как дополнительный member.
+
+    NWS API: /points/{lat},{lon} → /gridpoints/{office}/{x},{y}/forecast
+    Возвращает температуру в °F или None если не удалось.
+    """
+    try:
+        # Шаг 1: получить grid point
+        resp = httpx.get(
+            f"{NWS_API_URL}/points/{lat:.4f},{lon:.4f}",
+            headers={"User-Agent": "PolymarketWeatherBot/1.0"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        forecast_url = resp.json()["properties"]["forecast"]
+
+        # Шаг 2: получить прогноз
+        resp = httpx.get(
+            forecast_url,
+            headers={"User-Agent": "PolymarketWeatherBot/1.0"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        periods = resp.json()["properties"]["periods"]
+
+        target_str = target_date.strftime("%Y-%m-%d")
+        for period in periods:
+            start = period.get("startTime", "")
+            if target_str not in start:
+                continue
+            temp = period.get("temperature")
+            if temp is None:
+                continue
+            is_day = period.get("isDaytime", True)
+            # highest → daytime period, lowest → nighttime period
+            if temp_type == "highest" and is_day:
+                return float(temp)
+            if temp_type == "lowest" and not is_day:
+                return float(temp)
+
+    except Exception as e:
+        logger.debug("NWS API error for %.2f,%.2f: %s", lat, lon, e)
+    return None
+
+
+def fetch_ensemble_forecast(
+    lat: float,
+    lon: float,
+    target_date: datetime,
+    temp_type: str,
+    city: str = "",
 ) -> list[float]:
     """Получить ансамблевый прогноз температуры от Open-Meteo.
 
@@ -352,8 +451,9 @@ def fetch_ensemble_forecast(
     """
     date_str = target_date.strftime("%Y-%m-%d")
 
-    # Используем GFS (31 member) + ECMWF IFS (51 member)
-    models = ["gfs_seamless", "ecmwf_ifs025"]
+    # Используем 4 ensemble модели для максимального покрытия (~140 members):
+    # GFS (31 member) + ECMWF IFS (51 member) + ICON (40 member) + GEM (21 member)
+    models = ["gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_global"]
     daily_var = "temperature_2m_max" if temp_type == "highest" else "temperature_2m_min"
 
     all_temps: list[float] = []
@@ -393,6 +493,13 @@ def fetch_ensemble_forecast(
 
         except Exception as e:
             logger.warning("Open-Meteo %s error for %s: %s", model, date_str, e)
+
+    # Дополнительный member от NWS API (только US города)
+    if city.lower() in US_CITIES:
+        nws_temp = fetch_nws_forecast(lat, lon, target_date, temp_type)
+        if nws_temp is not None:
+            all_temps.append(nws_temp)
+            logger.debug("NWS API added member: %.1f°F for %s", nws_temp, city)
 
     logger.info(
         "Ensemble forecast: %d members for %.2f,%.2f on %s (%s)",
@@ -524,7 +631,11 @@ def scan_weather_markets(
 
             if cache_key not in forecast_cache:
                 temps = fetch_ensemble_forecast(
-                    info.lat, info.lon, info.target_date, info.temp_type
+                    info.lat,
+                    info.lon,
+                    info.target_date,
+                    info.temp_type,
+                    city=info.city,
                 )
                 forecast_cache[cache_key] = temps
 
