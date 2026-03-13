@@ -9,10 +9,9 @@ services:
       - polymarket-data:/app/data
       - polymarket-logs:/app/logs
       - polymarket-results:/app/results
-      - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json:ro
+      - ${HOME}/.claude/.credentials.json:/home/botuser/.claude/.credentials.json:ro
     environment:
       - TZ=UTC
-      - HOME=/root
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8899/api/portfolio"]
       interval: 60s

@@ -106,7 +106,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 async def dashboard(request: Request) -> HTMLResponse:
     storage = PortfolioStorage()
     summary = storage.get_summary()
-    history = list(reversed(storage.history[-30:]))
+    history = list(reversed(storage.history))
     analyses = _load_latest_analyses()
 
     return templates.TemplateResponse(
@@ -128,6 +128,7 @@ async def api_get_settings() -> JSONResponse:
 
     return JSONResponse(
         {
+            "min_hours_to_resolution": settings.min_hours_to_resolution,
             "max_hours_to_resolution": settings.max_hours_to_resolution,
             "min_liquidity_usd": settings.min_liquidity_usd,
             "min_edge_threshold": settings.min_edge_threshold * 100,
@@ -136,6 +137,7 @@ async def api_get_settings() -> JSONResponse:
             "max_position_pct": settings.max_position_pct * 100,
             "max_total_exposure_pct": settings.max_total_exposure_pct * 100,
             "max_concurrent_positions": settings.max_concurrent_positions,
+            "default_trade_size_usd": settings.default_trade_size_usd,
             "stop_loss_pct": settings.stop_loss_pct * 100,
             "take_profit_pct": settings.take_profit_pct * 100,
         }
@@ -148,6 +150,7 @@ async def api_update_settings(request: Request) -> JSONResponse:
 
     data = await request.json()
     mapping = {
+        "min_hours_to_resolution": ("min_hours_to_resolution", 1.0),
         "max_hours_to_resolution": ("max_hours_to_resolution", 1.0),
         "min_liquidity_usd": ("min_liquidity_usd", 1.0),
         "min_edge_threshold": ("min_edge_threshold", 0.01),
@@ -156,6 +159,7 @@ async def api_update_settings(request: Request) -> JSONResponse:
         "max_position_pct": ("max_position_pct", 0.01),
         "max_total_exposure_pct": ("max_total_exposure_pct", 0.01),
         "max_concurrent_positions": ("max_concurrent_positions", 1.0),
+        "default_trade_size_usd": ("default_trade_size_usd", 1.0),
         "stop_loss_pct": ("stop_loss_pct", 0.01),
         "take_profit_pct": ("take_profit_pct", 0.01),
     }
@@ -170,6 +174,32 @@ async def api_update_settings(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok", "updated": updated})
 
 
+@app.get("/api/analytics")
+async def api_analytics() -> JSONResponse:
+    """Аналитика: backtest results + signals stats."""
+    backtest_path = Path("data") / "backtest_results.json"
+    backtest: dict = {}
+    if backtest_path.exists():
+        try:
+            backtest = json.loads(backtest_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    from trader.signals_history import signals_history
+
+    signals_stats = signals_history.get_stats()
+
+    return JSONResponse(
+        {
+            "backtest": backtest.get("summary", {}),
+            "strategy_always_no": backtest.get("strategy_always_no", {}),
+            "strategy_exact_no": backtest.get("strategy_exact_no", {}),
+            "direction_stats": backtest.get("direction_stats", {}),
+            "signals": signals_stats,
+        }
+    )
+
+
 @app.get("/api/scans")
 async def api_scans() -> JSONResponse:
     from trader.scan_log import scan_logger
@@ -177,9 +207,28 @@ async def api_scans() -> JSONResponse:
     return JSONResponse(scan_logger.get_scans(limit=30))
 
 
+@app.get("/api/signals")
+async def api_signals(type: str | None = None, limit: int = 200) -> JSONResponse:
+    from trader.signals_history import signals_history
+
+    return JSONResponse(signals_history.get_signals(signal_type=type, limit=limit))
+
+
+@app.get("/api/signals/stats")
+async def api_signals_stats() -> JSONResponse:
+    from trader.signals_history import signals_history
+
+    return JSONResponse(signals_history.get_stats())
+
+
 @app.get("/scans", response_class=HTMLResponse)
 async def scans_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("scans.html", {"request": request})
+
+
+@app.get("/signals", response_class=HTMLResponse)
+async def signals_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse("signals.html", {"request": request})
 
 
 @app.get("/api/portfolio")
@@ -191,7 +240,7 @@ async def api_portfolio() -> JSONResponse:
 @app.get("/api/history")
 async def api_history() -> JSONResponse:
     storage = PortfolioStorage()
-    return JSONResponse(list(reversed(storage.history[-50:])))
+    return JSONResponse(list(reversed(storage.history)))
 
 
 @app.post("/api/monitor")
@@ -237,7 +286,7 @@ def _monitor_bg() -> None:
         storage = PortfolioStorage()
         update_positions(storage)
         sync_broadcast("portfolio", storage.get_summary())
-        sync_broadcast("history", list(reversed(storage.history[-30:])))
+        sync_broadcast("history", list(reversed(storage.history)))
         _set_status("idle", "Prices updated")
     except Exception as e:
         logger.error("Monitor error: %s", e)
@@ -252,7 +301,7 @@ def _run_paper_bg() -> None:
         run_paper_trading(max_markets=500, on_log=_broadcast_log)
         storage = PortfolioStorage()
         sync_broadcast("portfolio", storage.get_summary())
-        sync_broadcast("history", list(reversed(storage.history[-30:])))
+        sync_broadcast("history", list(reversed(storage.history)))
         _set_status("idle", "Paper trading completed")
     except Exception as e:
         logger.exception("Paper trading error: %s", e)
@@ -268,7 +317,7 @@ def _run_paper_bg_fast() -> None:
         run_paper_trading(max_markets=500, on_log=_broadcast_log)
         storage = PortfolioStorage()
         sync_broadcast("portfolio", storage.get_summary())
-        sync_broadcast("history", list(reversed(storage.history[-30:])))
+        sync_broadcast("history", list(reversed(storage.history)))
         _set_status("idle", "Auto paper trading completed")
     except Exception as e:
         logger.exception("Auto paper trading error: %s", e)

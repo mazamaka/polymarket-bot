@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polymarket Bot -- Signals History</title>
+    <style>
+        :root { --bg:#0d1117; --card:#161b22; --card2:#1c2129; --border:#30363d; --text:#e6edf3; --dim:#8b949e; --green:#3fb950; --red:#f85149; --blue:#58a6ff; --yellow:#d29922; --purple:#bc8cff; }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--bg); color:var(--text); line-height:1.5; padding:16px; max-width:1440px; margin:0 auto; }
+
+        .header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid var(--border); flex-wrap:wrap; gap:10px; }
+        .header h1 { font-size:20px; } .header h1 span { color:var(--blue); }
+        .nav { display:flex; gap:8px; }
+        .btn { padding:5px 12px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--text); cursor:pointer; font-size:12px; transition:all .15s; text-decoration:none; }
+        .btn:hover { border-color:var(--blue); color:var(--blue); }
+        .btn.active { background:var(--blue); color:#fff; border-color:var(--blue); }
+
+        .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:16px; }
+        .stat { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; }
+        .stat-label { font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; }
+        .stat-val { font-size:22px; font-weight:600; margin-top:1px; }
+        .stat-sub { font-size:11px; color:var(--dim); margin-top:1px; }
+
+        .filters { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; align-items:center; }
+        .filters select { background:var(--card); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:12px; }
+        .filters select:focus { border-color:var(--blue); outline:none; }
+        .filters label { font-size:12px; color:var(--dim); }
+
+        .section { background:var(--card); border:1px solid var(--border); border-radius:8px; margin-bottom:16px; overflow:hidden; }
+
+        table { width:100%; border-collapse:collapse; }
+        th { text-align:left; padding:6px 10px; font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:.3px; border-bottom:1px solid var(--border); background:rgba(0,0,0,.2); position:sticky; top:0; z-index:1; }
+        td { padding:6px 10px; font-size:12px; border-bottom:1px solid var(--border); }
+        tr:hover { background:rgba(88,166,255,.04); }
+        tr.open-signal { background:rgba(63,185,80,.06); }
+        tr.expandable { cursor:pointer; }
+
+        .badge { display:inline-block; padding:1px 7px; border-radius:10px; font-size:10px; font-weight:600; }
+        .b-ai { background:rgba(88,166,255,.12); color:var(--blue); }
+        .b-weather { background:rgba(210,153,34,.12); color:var(--yellow); }
+        .b-correlation { background:rgba(188,140,255,.12); color:var(--purple); }
+        .b-open { background:rgba(63,185,80,.12); color:var(--green); }
+        .b-skip { background:rgba(139,148,158,.12); color:var(--dim); }
+        .b-yes { background:rgba(63,185,80,.12); color:var(--green); }
+        .b-no { background:rgba(248,81,73,.12); color:var(--red); }
+
+        .green { color:var(--green); } .red { color:var(--red); } .blue { color:var(--blue); } .yellow { color:var(--yellow); } .purple { color:var(--purple); }
+
+        .table-wrap { max-height:700px; overflow-y:auto; }
+        .empty { padding:30px; text-align:center; color:var(--dim); font-size:14px; }
+
+        .detail-row { display:none; }
+        .detail-row.visible { display:table-row; }
+        .detail-row td { padding:10px 14px; background:var(--card2); font-size:11px; color:var(--dim); line-height:1.7; }
+        .detail-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:8px; }
+        .detail-item { }
+        .detail-item .dl { font-size:10px; text-transform:uppercase; color:var(--dim); letter-spacing:.3px; }
+        .detail-item .dv { color:var(--text); font-size:12px; }
+        .detail-reasoning { margin-top:8px; padding:8px 10px; background:rgba(0,0,0,.2); border-radius:6px; font-size:11px; line-height:1.6; color:var(--text); max-width:900px; white-space:pre-wrap; word-break:break-word; }
+
+        .ws-status { font-size:11px; color:var(--dim); margin-left:auto; }
+
+        @media (max-width:768px) { body{padding:8px;} .stats{grid-template-columns:repeat(2,1fr);} }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1><span>Polymarket</span> Signals History</h1>
+    <div class="nav">
+        <a class="btn" href="/">Dashboard</a>
+        <a class="btn" href="/scans">Scans</a>
+        <a class="btn active" href="/signals">Signals</a>
+        <span class="ws-status" id="ws-indicator">WS: ...</span>
+    </div>
+</div>
+
+<div class="stats" id="stats-grid">
+    <div class="stat"><div class="stat-label">Total Signals</div><div class="stat-val" id="st-total">--</div><div class="stat-sub" id="st-total-sub"></div></div>
+    <div class="stat"><div class="stat-label">AI Signals</div><div class="stat-val blue" id="st-ai">--</div><div class="stat-sub">Claude analysis</div></div>
+    <div class="stat"><div class="stat-label">Weather Signals</div><div class="stat-val yellow" id="st-weather">--</div><div class="stat-sub">Ensemble model</div></div>
+    <div class="stat"><div class="stat-label">Correlation</div><div class="stat-val purple" id="st-corr">--</div><div class="stat-sub">Spread signals</div></div>
+    <div class="stat"><div class="stat-label">Opened</div><div class="stat-val green" id="st-open">--</div><div class="stat-sub">Trades taken</div></div>
+    <div class="stat"><div class="stat-label">Skipped</div><div class="stat-val" id="st-skip" style="color:var(--dim)">--</div><div class="stat-sub">Filtered out</div></div>
+    <div class="stat"><div class="stat-label">Open Rate</div><div class="stat-val" id="st-rate">--</div><div class="stat-sub">OPEN / Total</div></div>
+</div>
+
+<div class="filters">
+    <label>Type:</label>
+    <select id="f-type" onchange="applyFilters()">
+        <option value="all">All</option>
+        <option value="ai">AI</option>
+        <option value="weather">Weather</option>
+        <option value="correlation">Correlation</option>
+    </select>
+    <label>Action:</label>
+    <select id="f-action" onchange="applyFilters()">
+        <option value="all">All</option>
+        <option value="OPEN">OPEN</option>
+        <option value="SKIP">SKIP</option>
+    </select>
+    <label>Limit:</label>
+    <select id="f-limit" onchange="loadSignals()">
+        <option value="50">50</option>
+        <option value="100">100</option>
+        <option value="200" selected>200</option>
+        <option value="500">500</option>
+    </select>
+    <button class="btn" onclick="loadSignals()">Refresh</button>
+</div>
+
+<div class="section">
+    <div id="content"><div class="empty">Loading signals...</div></div>
+</div>
+
+<script>
+var allSignals = [];
+
+function el(id) { return document.getElementById(id); }
+function ce(tag) { return document.createElement(tag); }
+function txt(e, t) { e.textContent = t; }
+
+function makeTd(text, style) { var td = ce('td'); txt(td, text || ''); if (style) td.setAttribute('style', style); return td; }
+function makeBadge(text, cls) { var s = ce('span'); s.className = 'badge ' + cls; txt(s, text); return s; }
+function makeBadgeTd(text, cls) { var td = ce('td'); td.appendChild(makeBadge(text, cls)); return td; }
+
+function formatTs(ts) {
+    if (!ts) return '';
+    return ts.replace('T', ' ').slice(0, 19);
+}
+
+function formatPct(val) {
+    if (val == null) return '';
+    var v = typeof val === 'number' ? val : parseFloat(val);
+    if (isNaN(v)) return '';
+    if (Math.abs(v) < 1) v = v * 100;
+    return v.toFixed(1) + '%';
+}
+
+function formatEdge(val) {
+    if (val == null) return '';
+    var v = typeof val === 'number' ? val : parseFloat(val);
+    if (isNaN(v)) return '';
+    if (Math.abs(v) < 1) v = v * 100;
+    return (v > 0 ? '+' : '') + v.toFixed(1) + '%';
+}
+
+function typeBadgeClass(type) {
+    if (type === 'ai') return 'b-ai';
+    if (type === 'weather') return 'b-weather';
+    if (type === 'correlation') return 'b-correlation';
+    return 'b-ai';
+}
+
+function typeLabel(type) {
+    if (type === 'ai') return 'AI';
+    if (type === 'weather') return 'Weather';
+    if (type === 'correlation') return 'Corr';
+    return type || '';
+}
+
+function sideLabel(side) {
+    if (!side) return '';
+    if (side === 'SKIP') return '';
+    return side.replace('BUY_', '');
+}
+
+function sideBadgeClass(side) {
+    if (!side) return '';
+    if (side.includes('YES')) return 'b-yes';
+    if (side.includes('NO')) return 'b-no';
+    return '';
+}
+
+async function loadSignals() {
+    var limit = el('f-limit').value;
+    try {
+        var r = await fetch('/api/signals?limit=' + limit);
+        allSignals = await r.json();
+    } catch (e) {
+        allSignals = [];
+    }
+    loadStats();
+    applyFilters();
+}
+
+async function loadStats() {
+    try {
+        var r = await fetch('/api/signals/stats');
+        var s = await r.json();
+        txt(el('st-total'), s.total_signals || 0);
+        txt(el('st-ai'), (s.by_type && s.by_type.ai) || 0);
+        txt(el('st-weather'), (s.by_type && s.by_type.weather) || 0);
+        txt(el('st-corr'), (s.by_type && s.by_type.correlation) || 0);
+        var opened = (s.by_action && s.by_action.OPEN) || 0;
+        var skipped = (s.by_action && s.by_action.SKIP) || 0;
+        txt(el('st-open'), opened);
+        txt(el('st-skip'), skipped);
+        var total = s.total_signals || 0;
+        var rate = total > 0 ? ((opened / total) * 100).toFixed(1) + '%' : '--';
+        txt(el('st-rate'), rate);
+        txt(el('st-total-sub'), 'All time');
+    } catch (e) {
+        // ignore
+    }
+}
+
+function applyFilters() {
+    var typeFilter = el('f-type').value;
+    var actionFilter = el('f-action').value;
+
+    var filtered = allSignals;
+    if (typeFilter !== 'all') {
+        filtered = filtered.filter(function(s) { return s.type === typeFilter; });
+    }
+    if (actionFilter !== 'all') {
+        filtered = filtered.filter(function(s) { return s.action === actionFilter; });
+    }
+
+    renderTable(filtered);
+}
+
+function renderTable(signals) {
+    var body = el('content');
+    while (body.firstChild) body.removeChild(body.firstChild);
+
+    if (!signals || !signals.length) {
+        var d = ce('div'); d.className = 'empty'; txt(d, 'No signals found'); body.appendChild(d);
+        return;
+    }
+
+    var table = ce('table');
+    var thead = ce('thead');
+    var hr = ce('tr');
+    ['Time', 'Type', 'Action', 'Market', 'Side', 'AI/Model Prob', 'Market Prob', 'Edge', 'Confidence', 'Price', 'Size', 'Skip Reason'].forEach(function(h) {
+        var th = ce('th'); txt(th, h); hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    table.appendChild(thead);
+
+    var tbody = ce('tbody');
+
+    // Show newest first
+    var sorted = signals.slice().reverse();
+
+    sorted.forEach(function(s, idx) {
+        var tr = ce('tr');
+        tr.className = (s.action === 'OPEN' ? 'open-signal ' : '') + 'expandable';
+
+        // Time
+        tr.appendChild(makeTd(formatTs(s.ts), 'font-size:11px;color:var(--dim);white-space:nowrap'));
+
+        // Type
+        tr.appendChild(makeBadgeTd(typeLabel(s.type), typeBadgeClass(s.type)));
+
+        // Action
+        tr.appendChild(makeBadgeTd(s.action || '', s.action === 'OPEN' ? 'b-open' : 'b-skip'));
+
+        // Market (question truncated)
+        var q = s.question || '';
+        tr.appendChild(makeTd(q.length > 60 ? q.slice(0, 57) + '...' : q, 'max-width:350px'));
+
+        // Side
+        var sl = sideLabel(s.side);
+        if (sl) {
+            tr.appendChild(makeBadgeTd(sl, sideBadgeClass(s.side)));
+        } else {
+            tr.appendChild(makeTd(''));
+        }
+
+        // AI/Model Prob
+        var prob = s.type === 'weather' ? s.model_prob : s.ai_prob;
+        tr.appendChild(makeTd(formatPct(prob)));
+
+        // Market Prob
+        tr.appendChild(makeTd(formatPct(s.market_prob)));
+
+        // Edge
+        var edgeVal = s.edge;
+        var edgeStr = formatEdge(edgeVal);
+        var edgeNum = typeof edgeVal === 'number' ? edgeVal : parseFloat(edgeVal);
+        if (Math.abs(edgeNum) < 1) edgeNum = edgeNum * 100;
+        var edgeStyle = '';
+        if (Math.abs(edgeNum) >= 8) {
+            edgeStyle = edgeNum > 0 ? 'color:var(--green);font-weight:600' : 'color:var(--red);font-weight:600';
+        } else {
+            edgeStyle = 'color:var(--dim)';
+        }
+        tr.appendChild(makeTd(edgeStr, edgeStyle));
+
+        // Confidence
+        tr.appendChild(makeTd(formatPct(s.confidence)));
+
+        // Entry Price
+        tr.appendChild(makeTd(s.entry_price ? s.entry_price.toFixed(4) : '', 'color:var(--dim)'));
+
+        // Size
+        tr.appendChild(makeTd(s.size_usd ? '$' + s.size_usd.toFixed(2) : '', 'color:var(--dim)'));
+
+        // Skip Reason
+        tr.appendChild(makeTd(s.skip_reason || '', 'color:var(--yellow);font-size:11px;max-width:200px'));
+
+        var detailId = 'detail-' + idx;
+        tr.setAttribute('data-detail', detailId);
+        tr.onclick = function() { toggleDetail(detailId); };
+        tbody.appendChild(tr);
+
+        // Detail row (hidden by default)
+        var detailTr = ce('tr');
+        detailTr.className = 'detail-row';
+        detailTr.id = detailId;
+        var detailTd = ce('td');
+        detailTd.colSpan = 12;
+        detailTd.appendChild(buildDetailContent(s));
+        detailTr.appendChild(detailTd);
+        tbody.appendChild(detailTr);
+    });
+
+    table.appendChild(tbody);
+    var wrap = ce('div'); wrap.className = 'table-wrap';
+    wrap.appendChild(table);
+    body.appendChild(wrap);
+}
+
+function toggleDetail(id) {
+    var row = document.getElementById(id);
+    if (row) row.classList.toggle('visible');
+}
+
+function buildDetailContent(s) {
+    var container = ce('div');
+
+    var grid = ce('div'); grid.className = 'detail-grid';
+
+    var fields = [
+        { label: 'Market ID', value: s.market_id },
+        { label: 'Full Question', value: s.question },
+        { label: 'Type', value: s.type },
+        { label: 'Action', value: s.action },
+        { label: 'Side', value: s.side },
+        { label: 'Timestamp', value: formatTs(s.ts) },
+    ];
+
+    if (s.type === 'ai') {
+        fields.push({ label: 'AI Probability', value: formatPct(s.ai_prob) });
+        fields.push({ label: 'Market Probability', value: formatPct(s.market_prob) });
+        fields.push({ label: 'Edge', value: formatEdge(s.edge) });
+        fields.push({ label: 'Confidence', value: formatPct(s.confidence) });
+        fields.push({ label: 'Entry Price', value: s.entry_price ? s.entry_price.toFixed(4) : '' });
+        fields.push({ label: 'Size USD', value: s.size_usd ? '$' + s.size_usd.toFixed(2) : '' });
+        fields.push({ label: 'End Date', value: s.end_date || '' });
+        fields.push({ label: 'Volume', value: s.volume ? '$' + formatK(s.volume) : '' });
+        fields.push({ label: 'Liquidity', value: s.liquidity ? '$' + formatK(s.liquidity) : '' });
+    }
+
+    if (s.type === 'weather') {
+        fields.push({ label: 'City', value: s.city || '' });
+        fields.push({ label: 'Target Date', value: s.target_date || '' });
+        fields.push({ label: 'Temp Type', value: s.temp_type || '' });
+        fields.push({ label: 'Direction', value: s.direction || '' });
+        fields.push({ label: 'Threshold', value: s.threshold != null ? s.threshold + 'F' : '' });
+        fields.push({ label: 'Ensemble Count', value: s.ensemble_count || '' });
+        fields.push({ label: 'Ensemble Min', value: s.ensemble_min != null ? s.ensemble_min + 'F' : '' });
+        fields.push({ label: 'Ensemble Max', value: s.ensemble_max != null ? s.ensemble_max + 'F' : '' });
+        fields.push({ label: 'Ensemble Mean', value: s.ensemble_mean != null ? s.ensemble_mean + 'F' : '' });
+        fields.push({ label: 'Ensemble Median', value: s.ensemble_median != null ? s.ensemble_median + 'F' : '' });
+        fields.push({ label: 'Ensemble P10', value: s.ensemble_p10 != null ? s.ensemble_p10 + 'F' : '' });
+        fields.push({ label: 'Ensemble P90', value: s.ensemble_p90 != null ? s.ensemble_p90 + 'F' : '' });
+        fields.push({ label: 'Model Probability', value: formatPct(s.model_prob) });
+        fields.push({ label: 'Market Probability', value: formatPct(s.market_prob) });
+        fields.push({ label: 'Edge', value: formatEdge(s.edge) });
+        fields.push({ label: 'Confidence', value: formatPct(s.confidence) });
+        fields.push({ label: 'Entry Price', value: s.entry_price ? s.entry_price.toFixed(4) : '' });
+        fields.push({ label: 'Size USD', value: s.size_usd ? '$' + s.size_usd.toFixed(2) : '' });
+    }
+
+    if (s.type === 'correlation') {
+        fields.push({ label: 'Correlated Market', value: s.correlated_market_id || '' });
+        fields.push({ label: 'Correlated Question', value: s.correlated_question || '' });
+        fields.push({ label: 'Spread', value: s.spread != null ? formatEdge(s.spread) : '' });
+        fields.push({ label: 'Entry Price', value: s.entry_price ? s.entry_price.toFixed(4) : '' });
+        fields.push({ label: 'Size USD', value: s.size_usd ? '$' + s.size_usd.toFixed(2) : '' });
+    }
+
+    if (s.skip_reason) {
+        fields.push({ label: 'Skip Reason', value: s.skip_reason });
+    }
+
+    fields.forEach(function(f) {
+        if (!f.value && f.value !== 0) return;
+        var item = ce('div'); item.className = 'detail-item';
+        var dl = ce('div'); dl.className = 'dl'; txt(dl, f.label);
+        var dv = ce('div'); dv.className = 'dv'; txt(dv, String(f.value));
+        item.appendChild(dl); item.appendChild(dv);
+        grid.appendChild(item);
+    });
+
+    container.appendChild(grid);
+
+    // Reasoning (AI signals)
+    if (s.reasoning) {
+        var reasonDiv = ce('div'); reasonDiv.className = 'detail-reasoning';
+        txt(reasonDiv, s.reasoning);
+        container.appendChild(reasonDiv);
+    }
+
+    return container;
+}
+
+function formatK(n) {
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(0) + 'K';
+    return Math.round(n).toString();
+}
+
+// WebSocket for auto-refresh
+function connectWS() {
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var ws = new WebSocket(proto + '//' + location.host + '/ws');
+    ws.onopen = function() {
+        txt(el('ws-indicator'), 'WS: live');
+        el('ws-indicator').style.color = 'var(--green)';
+    };
+    ws.onmessage = function(e) {
+        // On any portfolio update, reload signals (new signal may have been recorded)
+        var msg = JSON.parse(e.data);
+        if (msg.event === 'portfolio' || msg.event === 'status') {
+            // Debounced refresh
+            clearTimeout(window._refreshTimer);
+            window._refreshTimer = setTimeout(loadSignals, 2000);
+        }
+    };
+    ws.onclose = function() {
+        txt(el('ws-indicator'), 'WS: off');
+        el('ws-indicator').style.color = 'var(--red)';
+        setTimeout(connectWS, 3000);
+    };
+    ws.onerror = function() { ws.close(); };
+}
+
+// Init
+loadSignals();
+connectWS();
+</script>
+</body>
+</html>

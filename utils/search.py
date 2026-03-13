@@ -1,29 +1,162 @@
 """Web search для обогащения контекста анализа рынков.
 
-Порядок: Tavily → Google News (pygooglenews) → DuckDuckGo fallback.
-Google News бесплатен и без лимитов, newspaper4k парсит полный текст статей.
+Источники (все используются для максимальной картины):
+1. News Intelligence Service (news.maxbob.xyz) — наш агрегатор
+2. Tavily — AI-оптимизированный поиск
+3. Google News — бесплатный RSS
+4. DuckDuckGo — fallback
 """
 
 import logging
 import os
 
+import httpx
+
+from config import settings
+
 logger = logging.getLogger(__name__)
+
+_news_client: httpx.Client | None = None
+
+
+def _get_news_client() -> httpx.Client:
+    global _news_client
+    if _news_client is None:
+        _news_client = httpx.Client(timeout=15.0)
+    return _news_client
+
+
+def fetch_news_service_context(question: str) -> dict:
+    """Получить полный контекст из News Intelligence Service.
+
+    Возвращает dict с ключами: articles, economic_events, weather, earnings.
+    """
+    try:
+        resp = _get_news_client().get(
+            f"{settings.news_service_url}/api/v1/market-context",
+            params={"question": question},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        logger.debug(
+            "News Service: %d articles, %d events, %d weather, %d earnings для: %s",
+            len(data.get("relevant_articles", [])),
+            len(data.get("economic_events", [])),
+            len(data.get("weather_forecasts", [])),
+            len(data.get("earnings", [])),
+            question[:50],
+        )
+        return data
+    except Exception as e:
+        logger.warning("News Service error: %s", e)
+        return {}
+
+
+def format_news_service_articles(data: dict, max_articles: int = 5) -> str:
+    """Форматирование статей из News Service для промпта."""
+    articles = data.get("relevant_articles", [])
+    if not articles:
+        return ""
+
+    lines = ["**News Intelligence (our aggregator):**"]
+    for a in articles[:max_articles]:
+        score = a.get("relevance_score")
+        score_str = f" [relevance: {score:.2f}]" if score else ""
+        summary = a.get("summary", "")
+        if summary and len(summary) > 200:
+            summary = summary[:200] + "..."
+        lines.append(
+            f"- [{a.get('published_at', '')[:10]}] {a.get('title', '')} "
+            f"({a.get('source', '')}){score_str}: {summary}"
+        )
+    return "\n".join(lines)
+
+
+def format_economic_events(data: dict, max_events: int = 10) -> str:
+    """Форматирование экономических событий для промпта."""
+    events = data.get("economic_events", [])
+    if not events:
+        return ""
+
+    lines = ["**Economic Calendar (upcoming/recent):**"]
+    for e in events[:max_events]:
+        parts = [
+            f"[{e.get('event_dt', '')[:16]}]",
+            f"{e.get('country', '')}",
+            f"{e.get('event_name', '')}",
+        ]
+        if e.get("importance"):
+            parts.append(f"({e['importance']})")
+        if e.get("actual"):
+            parts.append(f"actual: {e['actual']}")
+        if e.get("forecast"):
+            parts.append(f"forecast: {e['forecast']}")
+        if e.get("previous"):
+            parts.append(f"prev: {e['previous']}")
+        lines.append(f"- {' | '.join(parts)}")
+    return "\n".join(lines)
+
+
+def format_earnings(data: dict, max_items: int = 5) -> str:
+    """Форматирование earnings для промпта."""
+    earnings = data.get("earnings", [])
+    if not earnings:
+        return ""
+
+    lines = ["**Earnings Reports:**"]
+    for e in earnings[:max_items]:
+        parts = [f"{e.get('ticker', '')}"]
+        if e.get("company_name"):
+            parts.append(e["company_name"])
+        parts.append(f"date: {e.get('report_date', '')[:10]}")
+        if e.get("eps_actual") is not None:
+            parts.append(f"EPS: {e['eps_actual']}")
+            if e.get("eps_estimate") is not None:
+                parts.append(f"(est: {e['eps_estimate']})")
+        if e.get("surprise_pct") is not None:
+            parts.append(f"surprise: {e['surprise_pct']:+.1f}%")
+        if e.get("revenue_actual") is not None:
+            parts.append(f"rev: {e['revenue_actual']}")
+        lines.append(f"- {' | '.join(parts)}")
+    return "\n".join(lines)
 
 
 def search_market_context(question: str, max_results: int = 5) -> str:
     """Поиск актуальных новостей по теме рынка.
 
-    Tavily — primary (AI-оптимизированный, include_answer).
-    Google News — secondary (бесплатно, без ключа, без лимитов).
-    DuckDuckGo — fallback.
+    Объединяет все источники для максимальной картины.
     """
-    context = _tavily_search(question, max_results)
-    if context:
-        return context
-    context = _google_news_search(question, max_results)
-    if context:
-        return context
-    return _ddg_search(question, max_results)
+    all_parts: list[str] = []
+
+    # 1. News Intelligence Service — наш агрегатор (primary)
+    news_data = fetch_news_service_context(question)
+    if news_data:
+        articles = format_news_service_articles(news_data, max_articles=max_results)
+        if articles:
+            all_parts.append(articles)
+        econ = format_economic_events(news_data)
+        if econ:
+            all_parts.append(econ)
+        earnings = format_earnings(news_data)
+        if earnings:
+            all_parts.append(earnings)
+
+    # 2. Tavily — дополнительный AI-поиск
+    tavily = _tavily_search(question, max_results)
+    if tavily:
+        all_parts.append(tavily)
+
+    # 3. Google News / DuckDuckGo — fallback если ничего не нашлось
+    if not all_parts:
+        context = _google_news_search(question, max_results)
+        if context:
+            all_parts.append(context)
+        else:
+            ddg = _ddg_search(question, max_results)
+            if ddg:
+                all_parts.append(ddg)
+
+    return "\n\n".join(all_parts)
 
 
 def _tavily_search(question: str, max_results: int = 5) -> str:

@@ -22,24 +22,30 @@ from polymarket.api import PolymarketAPI
 from polymarket.models import AIPrediction
 from trader.monitor import update_positions
 from trader.risk import RiskManager
+from trader.signals_history import signals_history
 from trader.storage import PortfolioStorage
 
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
+_handlers: list[logging.Handler] = [logging.StreamHandler()]
+try:
+    _handlers.append(
+        logging.handlers.RotatingFileHandler(
+            LOG_DIR / "bot.log",
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+    )
+except PermissionError:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(),
-        logging.handlers.RotatingFileHandler(
-            LOG_DIR / "bot.log",
-            maxBytes=10 * 1024 * 1024,  # 10 MB
-            backupCount=5,
-            encoding="utf-8",
-        ),
-    ],
+    handlers=_handlers,
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -161,6 +167,21 @@ def run_paper_trading(
             skipped_type=0,
         )
 
+        # Snapshot рынков для backtesting
+        signals_history.record_market_snapshot(
+            [
+                {
+                    "id": m.id,
+                    "question": m.question[:100],
+                    "yes_price": m.outcome_prices[0] if m.outcome_prices else 0.5,
+                    "volume": round(m.volume, 0),
+                    "liquidity": round(m.liquidity, 0),
+                    "end_date": m.end_date,
+                }
+                for m in tradeable
+            ]
+        )
+
         if not tradeable:
             _log("Нет торгуемых рынков")
             scan_logger.finish_scan()
@@ -227,16 +248,25 @@ def run_paper_trading(
                 if not market:
                     continue
 
-                signal = risk_mgr.evaluate_signal(prediction, storage.balance)
+                # Передаём end_date в prediction для проверки в risk manager
+                prediction.end_date = market.end_date
+
+                signal = risk_mgr.evaluate_signal(
+                    prediction, storage.balance, is_weather=False
+                )
                 skip_reason = ""
                 if not signal:
                     skip_reason = (
                         f"edge {abs(prediction.edge) * 100:.0f}%<{settings.min_edge_threshold * 100:.0f}%"
                         if abs(prediction.edge) < settings.min_edge_threshold
-                        else f"conf {prediction.confidence * 100:.0f}%<{settings.min_confidence * 100:.0f}%"
-                        if prediction.confidence < settings.min_confidence
+                        else f"conf {prediction.confidence * 100:.0f}%<{settings.ai_min_confidence * 100:.0f}%"
+                        if prediction.confidence < settings.ai_min_confidence
                         else f"edge {abs(prediction.edge) * 100:.0f}%>{settings.max_edge_threshold * 100:.0f}% (too high)"
                         if abs(prediction.edge) > settings.max_edge_threshold
+                        else "no end_date"
+                        if settings.ai_require_end_date and not market.end_date
+                        else "ai_max_positions"
+                        if risk_mgr._count_ai_positions() >= settings.ai_max_positions
                         else "risk limit"
                     )
 
@@ -250,6 +280,23 @@ def run_paper_trading(
                     spread=0,
                     side=prediction.recommended_side,
                     skip_reason=skip_reason,
+                )
+                signals_history.record_ai_signal(
+                    market_id=prediction.market_id,
+                    question=prediction.question,
+                    ai_prob=prediction.ai_probability,
+                    market_prob=prediction.market_probability,
+                    edge=prediction.edge,
+                    confidence=prediction.confidence,
+                    side=prediction.recommended_side,
+                    reasoning=prediction.reasoning,
+                    action="SKIP" if skip_reason else "OPEN",
+                    skip_reason=skip_reason,
+                    entry_price=signal.price if signal else 0,
+                    size_usd=signal.size_usd if signal else 0,
+                    end_date=market.end_date,
+                    volume=market.volume,
+                    liquidity=market.liquidity,
                 )
 
                 if not signal:
@@ -347,6 +394,135 @@ def run_paper_trading(
                     )
         except Exception as e:
             logger.error("Correlation scan error: %s", e)
+
+        # 6b. Weather scan — отдельный бюджет, мимо общего risk manager
+        if settings.weather_enabled:
+            try:
+                from analyzer.weather import scan_weather_markets
+                from polymarket.models import Position  # noqa: F811
+
+                _log("Сканируем погодные рынки (Open-Meteo ensemble)...")
+                weather_predictions = scan_weather_markets(
+                    min_liquidity=settings.weather_min_liquidity,
+                    max_days_ahead=settings.weather_max_days_ahead,
+                    min_edge=settings.weather_min_edge,
+                    on_log=_log,
+                )
+                # Считаем текущие weather позиции
+                open_ids = storage.get_open_market_ids()
+                weather_open = sum(
+                    1 for p in storage.positions if "temperature" in p.question.lower()
+                )
+                weather_opened = 0
+
+                for wd in weather_predictions:
+                    wp = wd.prediction
+                    if wp.market_id in open_ids:
+                        continue
+
+                    # Определяем skip reason для записи в историю
+                    skip_reason = ""
+                    direction = wd.direction
+                    max_yes = settings.weather_max_yes_price.get(direction, 0.25)
+                    dir_min_edge = settings.weather_direction_min_edge.get(
+                        direction, settings.weather_min_edge
+                    )
+
+                    if weather_open + weather_opened >= settings.weather_max_positions:
+                        skip_reason = (
+                            f"max_positions ({settings.weather_max_positions})"
+                        )
+                    elif wp.market_probability > max_yes:
+                        skip_reason = (
+                            f"yes_price too high for {direction} "
+                            f"({wp.market_probability:.0%} > {max_yes:.0%})"
+                        )
+                    elif abs(wp.edge) < dir_min_edge:
+                        skip_reason = (
+                            f"edge below direction threshold "
+                            f"({abs(wp.edge):.0%} < {dir_min_edge:.0%} for {direction})"
+                        )
+                    elif abs(wp.edge) > settings.max_edge_threshold:
+                        skip_reason = f"edge {abs(wp.edge):.0%} > max {settings.max_edge_threshold:.0%}"
+                    elif wp.confidence < settings.min_confidence:
+                        skip_reason = f"conf {wp.confidence:.0%} < min {settings.min_confidence:.0%}"
+                    elif settings.weather_trade_size_usd > storage.balance:
+                        skip_reason = "insufficient balance"
+
+                    price = wp.market_probability
+                    if wp.recommended_side == "BUY_NO":
+                        price = 1 - wp.market_probability
+
+                    weather_market = api.get_market_by_id(wp.market_id)
+
+                    # Записываем ВСЕ сигналы в историю (и open, и skip)
+                    signals_history.record_weather_signal(
+                        market_id=wp.market_id,
+                        question=wp.question,
+                        city=wd.city,
+                        target_date=wd.target_date,
+                        temp_type=wd.temp_type,
+                        direction=wd.direction,
+                        threshold=wd.threshold,
+                        ensemble_temps=wd.ensemble_temps,
+                        model_prob=wp.ai_probability,
+                        market_prob=wp.market_probability,
+                        edge=wp.edge,
+                        confidence=wp.confidence,
+                        side=wp.recommended_side,
+                        action="SKIP" if skip_reason else "OPEN",
+                        skip_reason=skip_reason,
+                        entry_price=price,
+                        size_usd=settings.weather_trade_size_usd
+                        if not skip_reason
+                        else 0,
+                        end_date=weather_market.end_date if weather_market else "",
+                        volume=weather_market.volume if weather_market else 0,
+                        liquidity=weather_market.liquidity if weather_market else 0,
+                    )
+
+                    if skip_reason:
+                        if "max_positions" in skip_reason:
+                            _log(
+                                f"Weather: лимит позиций ({settings.weather_max_positions})"
+                            )
+                            break
+                        if "insufficient" in skip_reason:
+                            _log("Weather SKIP: недостаточно баланса")
+                            break
+                        _log(f"Weather SKIP: {skip_reason}")
+                        continue
+
+                    trade_size = settings.weather_trade_size_usd
+                    position = Position(
+                        market_id=wp.market_id,
+                        token_id="",
+                        question=wp.question,
+                        entry_price=price,
+                        size_usd=trade_size,
+                        current_price=price,
+                        side=wp.recommended_side,
+                        end_date=weather_market.end_date if weather_market else "",
+                        slug=weather_market.slug if weather_market else "",
+                        edge=wp.edge,
+                        confidence=wp.confidence,
+                        ai_probability=wp.ai_probability,
+                        reasoning=wp.reasoning[:300],
+                        volume=weather_market.volume if weather_market else 0,
+                        liquidity=weather_market.liquidity if weather_market else 0,
+                    )
+                    new_balance = storage.balance - trade_size
+                    storage.add_position(position, new_balance)
+                    weather_opened += 1
+                    open_ids.add(wp.market_id)
+                    _log(
+                        f"WEATHER OPEN: {wp.recommended_side} "
+                        f"{wp.question[:60]} @ {price:.4f} | "
+                        f"${trade_size:.2f} | edge: {wp.edge:+.0%} | "
+                        f"bal: ${storage.balance:.2f}"
+                    )
+            except Exception as e:
+                logger.error("Weather scan error: %s", e)
 
         # 7. Сводка
         scan_logger.finish_scan()

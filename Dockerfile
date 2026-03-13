@@ -12,6 +12,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
+# Create non-root user (Claude CLI blocks bypassPermissions for root)
+RUN useradd -m -s /bin/bash botuser
+
 WORKDIR /app
 
 COPY requirements.txt .
@@ -19,7 +22,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /app/data /app/logs /app/results
+RUN mkdir -p /app/data /app/logs /app/results /home/botuser/.claude \
+    && chown -R botuser:botuser /app /home/botuser/.claude
+
+USER botuser
 
 EXPOSE 8899
 

@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from config import settings
 from polymarket.models import Position
 
 logger = logging.getLogger(__name__)
@@ -51,14 +52,14 @@ class PortfolioStorage:
             except json.JSONDecodeError as e:
                 logger.error("Corrupted equity_curve.json, backing up: %s", e)
                 EQUITY_FILE.rename(EQUITY_FILE.with_suffix(".json.bak"))
-        return [{"ts": datetime.now().isoformat(), "equity": 100.0}]
+        return [{"ts": datetime.now().isoformat(), "equity": 1000.0}]
 
     def _calc_balance(self) -> float:
         for entry in reversed(self.history):
             if "balance_after" in entry:
                 return entry["balance_after"]
         spent = sum(p.size_usd for p in self.positions)
-        return 100.0 - spent
+        return 1000.0 - spent
 
     def save(self) -> None:
         """Сохранить все данные с file locking для защиты от race conditions."""
@@ -184,7 +185,7 @@ class PortfolioStorage:
         realized = sum(e.get("pnl", 0) for e in closes)
         wins = sum(1 for e in closes if e.get("pnl", 0) > 0)
         total_equity = self.balance + total_invested + total_unrealized
-        roi = (total_equity - 100.0) / 100.0 * 100
+        roi = (total_equity - 1000.0) / 1000.0 * 100
 
         avg_edge = 0.0
         edge_entries = [
@@ -206,6 +207,15 @@ class PortfolioStorage:
             "unrealized_pnl": round(total_unrealized, 2),
             "realized_pnl": round(realized, 2),
             "avg_edge": round(avg_edge, 1),
+            "exposure_pct": round(total_invested / max(total_equity, 1) * 100, 1),
+            "free_slots": max(
+                0,
+                int(
+                    (total_equity * settings.max_total_exposure_pct - total_invested)
+                    / settings.default_trade_size_usd
+                ),
+            ),
+            "max_positions": settings.max_concurrent_positions,
             "positions": [
                 {
                     "market_id": p.market_id,

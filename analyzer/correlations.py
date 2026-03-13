@@ -189,10 +189,23 @@ def detect_threshold_violations(event: Event) -> list[CorrelationSignal]:
     return signals
 
 
+_SPORT_KEYWORDS = re.compile(
+    r"(points|assists|rebounds|touchdowns|goals|saves|strikeouts|"
+    r"yards|tackles|rushing|passing|home runs|RBIs|steals|blocks|"
+    r"esports|BO3|BO5|group stage|playoffs?|match\s+\d|game\s+\d)",
+    re.IGNORECASE,
+)
+
+
+def _is_sport_market(question: str) -> bool:
+    """Проверка что рынок спортивный (нельзя торговать через correlation)."""
+    return bool(_SPORT_KEYWORDS.search(question))
+
+
 def scan_correlations(
-    min_liquidity: float = 500.0,
+    min_liquidity: float = 200.0,
     max_events: int = 200,
-    on_log: callable = None,
+    on_log: object = None,
 ) -> list[CorrelationSignal]:
     """Сканировать все events на кросс-маркет противоречия."""
 
@@ -203,7 +216,6 @@ def scan_correlations(
 
     api = PolymarketAPI()
     try:
-        # Ограничиваем до 500 events чтобы не грузить все 8000+ каждые 15 мин
         events = api.get_active_events(limit=100, max_events=500)
         multi = [e for e in events if len(e.markets) >= 2]
         _log(f"Корреляции: {len(events)} events, {len(multi)} с множеством рынков")
@@ -211,10 +223,17 @@ def scan_correlations(
         all_signals: list[CorrelationSignal] = []
 
         for event in multi[:max_events]:
+            # Фильтруем спортивные события
+            if _is_sport_market(event.title):
+                continue
+
             active = [
                 m
                 for m in event.markets
-                if m.active and not m.closed and m.liquidity >= min_liquidity
+                if m.active
+                and not m.closed
+                and m.liquidity >= min_liquidity
+                and not _is_sport_market(m.question)
             ]
             if len(active) < 2:
                 continue
@@ -223,6 +242,9 @@ def scan_correlations(
             threshold = detect_threshold_violations(event)
 
             for sig in temporal + threshold:
+                # Дополнительная проверка что buy market не спортивный
+                if _is_sport_market(sig.market_buy.question):
+                    continue
                 all_signals.append(sig)
                 _log(
                     f"CORRELATION: {sig.signal_type} in '{sig.event_title[:50]}' | "

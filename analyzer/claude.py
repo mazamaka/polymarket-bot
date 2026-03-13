@@ -23,11 +23,46 @@ from analyzer.prompts import (
 from config import settings
 from polymarket.models import AIPrediction, Market
 from utils.prices import PriceProvider
-from utils.search import search_market_context
+from utils.search import (
+    fetch_news_service_context,
+    format_economic_events,
+    search_market_context,
+)
 
 logger = logging.getLogger(__name__)
 
 _CLAUDE_ENV: dict[str, str] | None = None
+
+
+def _fetch_breaking_news(hours: int = 12, limit: int = 10) -> str:
+    """Получить свежие breaking news из News Service для контекста скрининга."""
+    try:
+        import httpx
+
+        resp = httpx.get(
+            f"{settings.news_service_url}/api/v1/articles",
+            params={"category": "breaking", "hours": hours, "limit": limit},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        articles = resp.json()
+        if not articles:
+            return ""
+        lines = ["**Breaking News (last 12h):**"]
+        for a in articles:
+            title = a.get("title", "")
+            summary = a.get("summary", "")
+            if summary and len(summary) > 150:
+                summary = summary[:150] + "..."
+            date = a.get("published_at", "")[:16]
+            if summary:
+                lines.append(f"- [{date}] {title}: {summary}")
+            else:
+                lines.append(f"- [{date}] {title}")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.debug("Breaking news fetch error: %s", e)
+        return ""
 
 
 def _get_clean_env() -> dict[str, str]:
@@ -36,6 +71,7 @@ def _get_clean_env() -> dict[str, str]:
     if _CLAUDE_ENV is None:
         _CLAUDE_ENV = os.environ.copy()
         _CLAUDE_ENV.pop("CLAUDECODE", None)
+        _CLAUDE_ENV.setdefault("HOME", os.path.expanduser("~"))
     return _CLAUDE_ENV
 
 
@@ -67,9 +103,8 @@ def _call_claude(
     )
 
     if result.returncode != 0:
-        logger.error(
-            "Claude CLI error (code %d): %s", result.returncode, result.stderr[:200]
-        )
+        err = result.stderr[:200] or result.stdout[:200]
+        logger.error("Claude CLI error (code %d): %s", result.returncode, err)
         return ""
 
     return result.stdout.strip()
@@ -210,6 +245,20 @@ class ClaudeAnalyzer:
         """Быстрый скрининг рынков батчами."""
         interesting: list[dict] = []
 
+        # Глобальный контекст — один раз на весь скрининг
+        global_context = ""
+        try:
+            news_data = fetch_news_service_context("economic events today")
+            econ = format_economic_events(news_data, max_events=15)
+            if econ:
+                global_context += econ
+            # Breaking news для общей картины
+            breaking = _fetch_breaking_news(hours=12, limit=10)
+            if breaking:
+                global_context += "\n\n" + breaking
+        except Exception as e:
+            logger.debug("News Service для скрининга: %s", e)
+
         for i in range(0, len(markets), batch_size):
             batch = markets[i : i + batch_size]
             markets_text = self._format_markets_for_screening(batch)
@@ -217,6 +266,8 @@ class ClaudeAnalyzer:
                 markets_list=markets_text,
                 today=datetime.now().strftime("%Y-%m-%d"),
             )
+            if global_context:
+                user_prompt += "\n\n" + global_context
             full_prompt = BATCH_SCREEN_SYSTEM + "\n\n" + user_prompt
 
             try:

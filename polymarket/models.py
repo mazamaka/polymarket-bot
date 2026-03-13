@@ -45,6 +45,7 @@ class AIPrediction(BaseModel):
     edge: float = 0.0  # ai_probability - market_probability
     reasoning: str = ""
     recommended_side: str = ""  # BUY_YES, BUY_NO, SKIP
+    end_date: str = ""  # для проверки в risk manager
     timestamp: datetime = Field(default_factory=datetime.now)
 
 

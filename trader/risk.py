@@ -14,16 +14,33 @@ class RiskManager:
     def __init__(self, positions: list[Position] | None = None) -> None:
         self.positions: list[Position] = positions or []
 
+    def _count_ai_positions(self) -> int:
+        """Подсчёт AI (не-weather) позиций."""
+        return sum(1 for p in self.positions if "temperature" not in p.question.lower())
+
     def evaluate_signal(
-        self, prediction: AIPrediction, balance_usd: float
+        self,
+        prediction: AIPrediction,
+        balance_usd: float,
+        is_weather: bool = False,
     ) -> TradeSignal | None:
-        """Оценить prediction и создать trade signal с учётом рисков."""
-        # Проверка уверенности Claude
-        if prediction.confidence < settings.min_confidence:
+        """Оценить prediction и создать trade signal с учётом рисков.
+
+        Args:
+            prediction: AI предсказание
+            balance_usd: текущий баланс
+            is_weather: True если это weather сигнал (другие пороги)
+        """
+        # Проверка уверенности — разные пороги для AI и weather
+        min_conf = settings.min_confidence
+        if not is_weather:
+            min_conf = settings.ai_min_confidence
+
+        if prediction.confidence < min_conf:
             logger.info(
                 "SKIP: низкая уверенность %.0f%% < %.0f%% для %s",
                 prediction.confidence * 100,
-                settings.min_confidence * 100,
+                min_conf * 100,
                 prediction.question[:50],
             )
             return None
@@ -51,9 +68,32 @@ class RiskManager:
         if prediction.recommended_side == "SKIP":
             return None
 
-        # Проверка max concurrent positions
+        # AI-specific: не входить в рынки без end_date (замораживает капитал)
+        if not is_weather and settings.ai_require_end_date:
+            end_date = getattr(prediction, "end_date", "")
+            if not end_date:
+                logger.info(
+                    "SKIP: AI рынок без end_date (капитал замораживается) — %s",
+                    prediction.question[:50],
+                )
+                return None
+
+        # AI-specific: лимит AI позиций
+        if not is_weather:
+            ai_count = self._count_ai_positions()
+            if ai_count >= settings.ai_max_positions:
+                logger.warning(
+                    "SKIP: AI лимит позиций %d/%d",
+                    ai_count,
+                    settings.ai_max_positions,
+                )
+                return None
+
+        # Проверка max concurrent positions (общий)
         if len(self.positions) >= settings.max_concurrent_positions:
-            logger.warning("SKIP: достигнут лимит позиций %d", len(self.positions))
+            logger.warning(
+                "SKIP: достигнут общий лимит позиций %d", len(self.positions)
+            )
             return None
 
         # Проверка max total exposure
