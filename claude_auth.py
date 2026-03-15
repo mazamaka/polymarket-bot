@@ -289,8 +289,22 @@ class ClaudeAuth:
         }
         return f"{AUTHORIZE_URL}?{urlencode(params)}", state
 
+    @staticmethod
+    def _extract_code(raw: str) -> str:
+        """Извлечь code из строки — поддерживает и голый код, и URL."""
+        raw = raw.strip()
+        if "code=" in raw:
+            from urllib.parse import parse_qs, urlparse  # noqa: E402
+
+            parsed = urlparse(raw)
+            codes = parse_qs(parsed.query).get("code", [])
+            if codes:
+                return codes[0]
+        return raw
+
     def complete_auth_flow(self, code: str, state: str) -> bool:
         """Обменять authorization code на токены. Возвращает True при успехе."""
+        code = self._extract_code(code)
         code_verifier = self._pending_auth.pop(state, None)
         self._save_pending()
         if code_verifier is None:
