@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
 TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-DEFAULT_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"
+REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"
 SCOPES = [
     "org:create_api_key",
     "user:profile",
@@ -47,8 +47,6 @@ class TokenStatus(str, Enum):
     ACTIVE = "active"
     EXPIRING_SOON = "expiring_soon"
     EXPIRED = "expired"
-    REFRESH_FAILED = "refresh_failed"
-    NEEDS_REAUTH = "needs_reauth"
     MISSING = "missing"
 
 
@@ -68,7 +66,7 @@ class AuthCompleteRequest(BaseModel):
 
 
 def _parse_expires_at(tokens: dict[str, Any]) -> int | None:
-    """Извлечь expiresAt (unix ms) из ответа сервера (camelCase или snake_case)."""
+    """Извлечь expiresAt (unix ms) из ответа сервера."""
     if "expiresAt" in tokens:
         return int(tokens["expiresAt"])
     if "expires_at" in tokens:
@@ -79,25 +77,38 @@ def _parse_expires_at(tokens: dict[str, Any]) -> int | None:
 
 
 def _parse_token_pair(tokens: dict[str, Any]) -> tuple[str | None, str | None]:
-    """Извлечь (access_token, refresh_token) из ответа (camelCase или snake_case)."""
+    """Извлечь (access_token, refresh_token) из ответа."""
     access = tokens.get("accessToken") or tokens.get("access_token")
     refresh = tokens.get("refreshToken") or tokens.get("refresh_token")
     return access, refresh
+
+
+def _extract_code(raw: str) -> str:
+    """Извлечь auth code из строки (голый код, код#state, или URL)."""
+    raw = raw.strip()
+    if "code=" in raw:
+        codes = parse_qs(urlparse(raw).query).get("code", [])
+        if codes:
+            return codes[0]
+    if "#" in raw:
+        raw = raw.split("#")[0]
+    return raw
 
 
 class ClaudeAuth:
     """Управление OAuth токенами Claude."""
 
     def __init__(self, credentials_path: Path | None = None) -> None:
-        self._creds_path: Path = credentials_path or (
+        self._creds_path = credentials_path or (
             Path.home() / ".claude" / ".credentials.json"
         )
         self._last_refresh: datetime | None = None
         self._pending_file = self._creds_path.parent / ".pending_auth.json"
         self._pending_auth: dict[str, str] = self._load_pending()
 
+    # ---- Credentials I/O ----
+
     def _load_pending(self) -> dict[str, str]:
-        """Загрузить pending auth из файла (переживает рестарт контейнера)."""
         try:
             if self._pending_file.exists():
                 return json.loads(self._pending_file.read_text("utf-8"))
@@ -106,14 +117,12 @@ class ClaudeAuth:
         return {}
 
     def _save_pending(self) -> None:
-        """Сохранить pending auth в файл."""
         try:
             self._pending_file.write_text(json.dumps(self._pending_auth), "utf-8")
         except OSError as exc:
             logger.warning("Failed to save pending auth: %s", exc)
 
     def _read_credentials(self) -> dict[str, Any] | None:
-        """Прочитать credentials JSON. Возвращает None если файл отсутствует."""
         if not self._creds_path.exists():
             return None
         try:
@@ -122,16 +131,29 @@ class ClaudeAuth:
             logger.warning("Failed to read credentials: %s", exc)
             return None
 
+    def _read_oauth(self) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        """Прочитать (oauth_dict, full_data). oauth=None если нет токенов."""
+        data = self._read_credentials()
+        if data is None:
+            return None, {}
+        oauth = data.get(_OAUTH_KEY)
+        if not oauth or not oauth.get("accessToken"):
+            return None, data
+        return oauth, data
+
     def _write_credentials(self, data: dict[str, Any]) -> None:
-        """Write credentials directly with flock (bind mount compatible)."""
+        """Запись credentials с flock (совместимо с Docker bind mount)."""
         with open(self._creds_path, "w") as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             json.dump(data, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
 
-    def _get_expiry_info(self, oauth: dict[str, Any]) -> tuple[datetime, int]:
-        """Вернуть (expires_at_datetime, ttl_seconds) из oauth данных."""
+    # ---- Expiry ----
+
+    @staticmethod
+    def _get_expiry(oauth: dict[str, Any]) -> tuple[datetime, int]:
+        """Вернуть (expires_at_datetime, ttl_seconds)."""
         now = time.time()
         expires_at_ms = oauth.get("expiresAt")
         if expires_at_ms is not None:
@@ -145,10 +167,12 @@ class ClaudeAuth:
         ttl = int(expires_at_sec - now)
         return datetime.fromtimestamp(expires_at_sec, tz=timezone.utc), ttl
 
+    # ---- Public API ----
+
     def get_status(self) -> ClaudeAuthStatus:
         """Полный статус токена без сетевых вызовов."""
-        data = self._read_credentials()
-        if data is None:
+        oauth, _ = self._read_oauth()
+        if oauth is None:
             return ClaudeAuthStatus(
                 status=TokenStatus.MISSING,
                 expires_at=None,
@@ -156,73 +180,126 @@ class ClaudeAuth:
                 subscription_type="unknown",
                 last_refresh=None,
                 has_refresh_token=False,
-                message="Credentials file not found",
+                message="No OAuth tokens found",
             )
-        oauth = data.get(_OAUTH_KEY)
-        if not oauth or not oauth.get("accessToken"):
-            return ClaudeAuthStatus(
-                status=TokenStatus.MISSING,
-                expires_at=None,
-                ttl_seconds=0,
-                subscription_type="unknown",
-                last_refresh=None,
-                has_refresh_token=False,
-                message="No OAuth tokens in credentials",
-            )
-        sub_type: str = oauth.get("subscriptionType", "unknown")
-        expires_dt, ttl = self._get_expiry_info(oauth)
-        last_ref = self._last_refresh.isoformat() if self._last_refresh else None
+        expires_dt, ttl = self._get_expiry(oauth)
         if ttl <= 0:
-            status, message = TokenStatus.EXPIRED, "Token expired"
+            status, msg = TokenStatus.EXPIRED, "Token expired"
         elif ttl <= REFRESH_THRESHOLD_SEC:
             status = TokenStatus.EXPIRING_SOON
-            message = f"Token expiring in {ttl // 60}m, auto-refresh soon"
+            msg = f"Token expiring in {ttl // 60}m"
         else:
             status = TokenStatus.ACTIVE
-            message = f"Token valid, expires in {ttl // 3600}h {(ttl % 3600) // 60}m"
+            msg = f"Token valid, expires in {ttl // 3600}h {(ttl % 3600) // 60}m"
         return ClaudeAuthStatus(
             status=status,
             expires_at=expires_dt.isoformat(),
             ttl_seconds=max(ttl, 0),
-            subscription_type=sub_type,
-            last_refresh=last_ref,
+            subscription_type=oauth.get("subscriptionType", "unknown"),
+            last_refresh=self._last_refresh.isoformat() if self._last_refresh else None,
             has_refresh_token=bool(oauth.get("refreshToken")),
-            message=message,
+            message=msg,
         )
 
     def is_token_valid(self) -> bool:
-        """Quick check: токен есть и не истек."""
-        data = self._read_credentials()
-        if data is None:
+        """Quick check: токен есть и не истёк."""
+        oauth, _ = self._read_oauth()
+        if oauth is None:
             return False
-        oauth = data.get(_OAUTH_KEY)
-        if not oauth or not oauth.get("accessToken"):
-            return False
-        _, ttl = self._get_expiry_info(oauth)
+        _, ttl = self._get_expiry(oauth)
         return ttl > 0
 
     def ensure_valid_token(self) -> bool:
-        """Главный метод - вызывать перед каждым _call_claude(). Возвращает True если ОК."""
-        data = self._read_credentials()
-        if data is None:
-            logger.warning("Credentials file not found: %s", self._creds_path)
+        """Проверить и обновить токен если нужно. Вызывать перед каждым API-запросом."""
+        oauth, _ = self._read_oauth()
+        if oauth is None:
             return False
-        oauth = data.get(_OAUTH_KEY)
-        if not oauth or not oauth.get("accessToken"):
-            logger.warning("No OAuth tokens in credentials")
-            return False
-        _, ttl = self._get_expiry_info(oauth)
+        _, ttl = self._get_expiry(oauth)
         if ttl > REFRESH_THRESHOLD_SEC:
             return True
-        refresh_token = oauth.get("refreshToken")
-        if not refresh_token:
-            logger.warning("No refresh token available")
-            return False
-        logger.info("Token TTL=%ds, attempting refresh", ttl)
-        return self._refresh_token(refresh_token)
+        rt = oauth.get("refreshToken")
+        if not rt:
+            logger.warning("No refresh token, TTL=%ds", ttl)
+            return ttl > 0
+        logger.info("Token TTL=%ds, refreshing", ttl)
+        return self._do_refresh(rt)
 
-    def _refresh_token(self, refresh_token: str) -> bool:
-        """POST refresh_token grant на TOKEN_URL. Возвращает True при успехе."""
+    def force_refresh(self) -> tuple[bool, str]:
+        """Принудительное обновление. Возвращает (ok, error_or_empty)."""
+        oauth, _ = self._read_oauth()
+        if oauth is None:
+            return False, "No OAuth tokens found"
+        rt = oauth.get("refreshToken")
+        if not rt:
+            return False, "No refresh token available"
+        if self._do_refresh(rt):
+            return True, ""
+        return False, "Refresh failed (token expired or invalid)"
+
+    # ---- OAuth flows ----
+
+    def start_auth_flow(self) -> tuple[str, str]:
+        """Начать OAuth PKCE flow. Возвращает (auth_url, state)."""
+        state = secrets.token_urlsafe(24)
+        verifier = secrets.token_urlsafe(32)
+        self._pending_auth[state] = verifier
+        self._save_pending()
+        params = {
+            "code": "true",
+            "response_type": "code",
+            "client_id": CLIENT_ID,
+            "redirect_uri": REDIRECT_URI,
+            "scope": " ".join(SCOPES),
+            "state": state,
+            "code_challenge": self._s256_challenge(verifier),
+            "code_challenge_method": "S256",
+        }
+        return f"{AUTHORIZE_URL}?{urlencode(params)}", state
+
+    def complete_auth_flow(self, code: str, state: str) -> bool:
+        """Обменять authorization code на токены."""
+        code = _extract_code(code)
+        verifier = self._pending_auth.get(state)
+        if verifier is None:
+            logger.warning("Unknown or expired state: %s", state)
+            return False
+        try:
+            resp = httpx.post(
+                TOKEN_URL,
+                json={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "client_id": CLIENT_ID,
+                    "redirect_uri": REDIRECT_URI,
+                    "code_verifier": verifier,
+                    "state": state,
+                },
+                headers={"Content-Type": "application/json"},
+                timeout=15,
+            )
+        except httpx.HTTPError as exc:
+            logger.warning("Code exchange HTTP error: %s", exc)
+            return False
+        if resp.status_code != 200:
+            logger.warning(
+                "Code exchange failed: %d %s", resp.status_code, resp.text[:200]
+            )
+            return False
+        tokens: dict[str, Any] = resp.json()
+        access, refresh = _parse_token_pair(tokens)
+        if not access:
+            logger.warning("No access token in exchange response")
+            return False
+        self._save_tokens(tokens, access, refresh)
+        self._pending_auth.pop(state, None)
+        self._save_pending()
+        logger.info("OAuth code exchange successful")
+        return True
+
+    # ---- Internal ----
+
+    def _do_refresh(self, refresh_token: str) -> bool:
+        """POST refresh_token grant."""
         try:
             resp = httpx.post(
                 TOKEN_URL,
@@ -236,108 +313,38 @@ class ClaudeAuth:
                 timeout=15,
             )
         except httpx.HTTPError as exc:
-            logger.warning("Token refresh HTTP error: %s", exc)
+            logger.warning("Refresh HTTP error: %s", exc)
             return False
         if resp.status_code != 200:
-            logger.warning(
-                "Token refresh failed: status=%d body=%s",
-                resp.status_code,
-                resp.text[:200],
-            )
+            logger.warning("Refresh failed: %d %s", resp.status_code, resp.text[:200])
             return False
         tokens: dict[str, Any] = resp.json()
-        new_access, new_refresh = _parse_token_pair(tokens)
-        if not new_access:
+        access, refresh = _parse_token_pair(tokens)
+        if not access:
             logger.warning("No access token in refresh response")
             return False
-        new_expires_at = _parse_expires_at(tokens)
         data = self._read_credentials() or {}
         oauth = data.get(_OAUTH_KEY, {})
-        oauth["accessToken"] = new_access
-        if new_refresh:
-            oauth["refreshToken"] = new_refresh
-        if new_expires_at is not None:
-            oauth["expiresAt"] = new_expires_at
+        oauth["accessToken"] = access
+        if refresh:
+            oauth["refreshToken"] = refresh
+        expires_at = _parse_expires_at(tokens)
+        if expires_at is not None:
+            oauth["expiresAt"] = expires_at
         data[_OAUTH_KEY] = oauth
         self._write_credentials(data)
         self._last_refresh = datetime.now(timezone.utc)
         logger.info("Token refreshed successfully")
         return True
 
-    def start_auth_flow(self) -> tuple[str, str]:
-        """Начать OAuth PKCE flow. Возвращает (auth_url, state)."""
-        state = secrets.token_urlsafe(24)
-        verifier = self._generate_code_verifier()
-        self._pending_auth[state] = verifier
-        self._save_pending()
-        params = {
-            "code": "true",
-            "response_type": "code",
-            "client_id": CLIENT_ID,
-            "redirect_uri": DEFAULT_REDIRECT_URI,
-            "scope": " ".join(SCOPES),
-            "state": state,
-            "code_challenge": self._generate_code_challenge(verifier),
-            "code_challenge_method": "S256",
-        }
-        return f"{AUTHORIZE_URL}?{urlencode(params)}", state
-
-    @staticmethod
-    def _extract_code(raw: str) -> str:
-        """Извлечь code из строки — поддерживает голый код, код#state, и URL."""
-        raw = raw.strip()
-        if "code=" in raw:
-            from urllib.parse import parse_qs, urlparse  # noqa: E402
-
-            parsed = urlparse(raw)
-            codes = parse_qs(parsed.query).get("code", [])
-            if codes:
-                return codes[0]
-        # Обрезаем #state если пользователь скопировал код вместе с ним
-        if "#" in raw:
-            raw = raw.split("#")[0]
-        return raw
-
-    def complete_auth_flow(self, code: str, state: str) -> bool:
-        """Обменять authorization code на токены. Возвращает True при успехе."""
-        code = self._extract_code(code)
-        code_verifier = self._pending_auth.get(state)
-        if code_verifier is None:
-            logger.warning("Unknown or expired state: %s", state)
-            return False
-        try:
-            resp = httpx.post(
-                TOKEN_URL,
-                json={
-                    "grant_type": "authorization_code",
-                    "code": code,
-                    "client_id": CLIENT_ID,
-                    "redirect_uri": DEFAULT_REDIRECT_URI,
-                    "code_verifier": code_verifier,
-                    "state": state,
-                },
-                headers={"Content-Type": "application/json"},
-                timeout=15,
-            )
-        except httpx.HTTPError as exc:
-            logger.warning("Code exchange HTTP error: %s", exc)
-            return False
-        if resp.status_code != 200:
-            logger.warning(
-                "Code exchange failed: status=%d body=%s",
-                resp.status_code,
-                resp.text[:200],
-            )
-            return False
-        tokens: dict[str, Any] = resp.json()
-        new_access, new_refresh = _parse_token_pair(tokens)
-        if not new_access:
-            logger.warning("No access token in code exchange response")
-            return False
+    def _save_tokens(
+        self, tokens: dict[str, Any], access: str, refresh: str | None
+    ) -> None:
+        """Сохранить новые токены из code exchange."""
         data = self._read_credentials() or {}
-        oauth: dict[str, Any] = {"accessToken": new_access}
-        if new_refresh:
-            oauth["refreshToken"] = new_refresh
+        oauth: dict[str, Any] = {"accessToken": access}
+        if refresh:
+            oauth["refreshToken"] = refresh
         expires_at = _parse_expires_at(tokens)
         if expires_at is not None:
             oauth["expiresAt"] = expires_at
@@ -346,18 +353,10 @@ class ClaudeAuth:
                 oauth[key] = tokens[key]
         data[_OAUTH_KEY] = oauth
         self._write_credentials(data)
-        self._pending_auth.pop(state, None)
-        self._save_pending()
         self._last_refresh = datetime.now(timezone.utc)
-        logger.info("OAuth code exchange successful")
-        return True
 
     @staticmethod
-    def _generate_code_verifier() -> str:
-        return secrets.token_urlsafe(32)
-
-    @staticmethod
-    def _generate_code_challenge(verifier: str) -> str:
+    def _s256_challenge(verifier: str) -> str:
         digest = hashlib.sha256(verifier.encode("ascii")).digest()
         return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
@@ -374,29 +373,21 @@ async def get_claude_auth_status() -> ClaudeAuthStatus:
 
 
 @claude_auth_router.post("/refresh")
-async def force_refresh() -> dict[str, Any]:
-    data = _auth._read_credentials()
-    if data is None:
-        return {"ok": False, "error": "Credentials file not found"}
-    oauth = data.get(_OAUTH_KEY)
-    if not oauth:
-        return {"ok": False, "error": "No OAuth data in credentials"}
-    refresh_token = oauth.get("refreshToken")
-    if not refresh_token:
-        return {"ok": False, "error": "No refresh token available"}
-    if _auth._refresh_token(refresh_token):
+async def api_force_refresh() -> dict[str, Any]:
+    ok, error = _auth.force_refresh()
+    if ok:
         return {"ok": True, "status": _auth.get_status().model_dump()}
-    return {"ok": False, "error": "Refresh token expired or invalid"}
+    return {"ok": False, "error": error}
 
 
 @claude_auth_router.get("/start")
-async def start_auth() -> dict[str, str]:
+async def api_start_auth() -> dict[str, str]:
     auth_url, state = _auth.start_auth_flow()
     return {"auth_url": auth_url, "state": state}
 
 
 @claude_auth_router.post("/complete")
-async def complete_auth(request: AuthCompleteRequest) -> dict[str, Any]:
+async def api_complete_auth(request: AuthCompleteRequest) -> dict[str, Any]:
     if _auth.complete_auth_flow(request.code, request.state):
         return {"ok": True, "status": _auth.get_status().model_dump()}
     return {"ok": False, "error": "Invalid state or code exchange failed"}
