@@ -20,6 +20,7 @@ from analyzer.prompts import (
     BATCH_SCREEN_USER,
     SUPERFORECASTER_SYSTEM,
 )
+from claude_auth import ClaudeAuth  # noqa: E402
 from config import settings
 from polymarket.models import AIPrediction, Market
 from utils.prices import PriceProvider
