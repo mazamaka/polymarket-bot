@@ -438,6 +438,25 @@ def fetch_nws_forecast(
     return None
 
 
+# --- Forecast cache: city+date+temp_type → (temps, timestamp) ---
+_forecast_cache: dict[str, tuple[list[float], float]] = {}
+_FORECAST_CACHE_TTL: float = 7200.0  # 2 hours
+_last_api_call: float = 0.0
+_API_RATE_DELAY: float = 0.4  # seconds between API calls
+
+
+def _rate_limit() -> None:
+    """Простой rate limiter — не чаще 1 запроса в 0.4 сек."""
+    import time
+
+    global _last_api_call
+    now = time.monotonic()
+    elapsed = now - _last_api_call
+    if elapsed < _API_RATE_DELAY:
+        time.sleep(_API_RATE_DELAY - elapsed)
+    _last_api_call = time.monotonic()
+
+
 def fetch_ensemble_forecast(
     lat: float,
     lon: float,
@@ -445,28 +464,76 @@ def fetch_ensemble_forecast(
     temp_type: str,
     city: str = "",
 ) -> list[float]:
-    """Получить ансамблевый прогноз температуры от Open-Meteo.
+    """Получить ансамблевый прогноз температуры.
 
-    Возвращает список температур (°F) от всех ensemble members на target_date.
+    1. Проверяет кэш (2 часа TTL)
+    2. Open-Meteo Ensemble API — все 4 модели в ОДНОМ запросе
+    3. Fallback: Open-Meteo deterministic (6 моделей)
+    4. Fallback: Visual Crossing (1000/day free)
+    5. NWS API для US городов как доп. member
     """
+    import time
+
+    cache_key = f"{lat:.2f},{lon:.2f},{target_date.strftime('%Y-%m-%d')},{temp_type}"
+
+    # Check cache
+    if cache_key in _forecast_cache:
+        cached_temps, cached_ts = _forecast_cache[cache_key]
+        if (time.monotonic() - cached_ts) < _FORECAST_CACHE_TTL:
+            logger.debug("Cache hit: %d members for %s", len(cached_temps), cache_key)
+            return cached_temps
+
     date_str = target_date.strftime("%Y-%m-%d")
-
-    # Используем 4 ensemble модели для максимального покрытия (~140 members):
-    # GFS (31 member) + ECMWF IFS (51 member) + ICON (40 member) + GEM (21 member)
-    models = ["gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_global"]
     daily_var = "temperature_2m_max" if temp_type == "highest" else "temperature_2m_min"
-
     all_temps: list[float] = []
 
-    for model in models:
+    # 1. Open-Meteo Ensemble — ВСЕ модели в одном запросе (4x меньше API calls)
+    _rate_limit()
+    try:
+        resp = httpx.get(
+            ENSEMBLE_API_URL,
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "models": "gfs_seamless,ecmwf_ifs025,icon_seamless,gem_global",
+                "daily": daily_var,
+                "temperature_unit": "fahrenheit",
+                "start_date": date_str,
+                "end_date": date_str,
+                "timezone": "auto",
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        daily = data.get("daily", {})
+        for key, values in daily.items():
+            if key.startswith(f"{daily_var}_member") and values:
+                val = values[0]
+                if val is not None:
+                    all_temps.append(float(val))
+        if not all_temps and daily_var in daily and daily[daily_var]:
+            val = daily[daily_var][0]
+            if val is not None:
+                all_temps.append(float(val))
+    except Exception as e:
+        logger.warning("Open-Meteo ensemble error for %s: %s", date_str, e)
+
+    # 2. Fallback: Open-Meteo deterministic (разные модели = "бедный ensemble")
+    if len(all_temps) < 5:
+        _rate_limit()
         try:
+            det_models = "gfs_seamless,ecmwf_ifs025,icon_seamless,gem_global,jma_seamless,meteofrance_seamless"
+            det_var = (
+                "temperature_2m_max" if temp_type == "highest" else "temperature_2m_min"
+            )
             resp = httpx.get(
-                ENSEMBLE_API_URL,
+                "https://api.open-meteo.com/v1/forecast",
                 params={
                     "latitude": lat,
                     "longitude": lon,
-                    "models": model,
-                    "daily": daily_var,
+                    "models": det_models,
+                    "daily": det_var,
                     "temperature_unit": "fahrenheit",
                     "start_date": date_str,
                     "end_date": date_str,
@@ -476,30 +543,45 @@ def fetch_ensemble_forecast(
             )
             resp.raise_for_status()
             data = resp.json()
-
             daily = data.get("daily", {})
-            # Ensemble members: temperature_2m_max_member00, member01, ...
             for key, values in daily.items():
-                if key.startswith(f"{daily_var}_member") and values:
+                if det_var in key and values:
                     val = values[0]
-                    if val is not None:
+                    if val is not None and val not in all_temps:
                         all_temps.append(float(val))
-
-            # Если нет member keys — возможно данные в основном ключе
-            if not all_temps and daily_var in daily and daily[daily_var]:
-                val = daily[daily_var][0]
-                if val is not None:
-                    all_temps.append(float(val))
-
         except Exception as e:
-            logger.warning("Open-Meteo %s error for %s: %s", model, date_str, e)
+            logger.warning("Open-Meteo deterministic fallback error: %s", e)
 
-    # Дополнительный member от NWS API (только US города)
+    # 3. Fallback: Visual Crossing (1000/day free, no key needed for limited use)
+    if len(all_temps) < 3:
+        _rate_limit()
+        try:
+            vc_url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{lat},{lon}/{date_str}/{date_str}"
+            resp = httpx.get(
+                vc_url,
+                params={
+                    "unitGroup": "us",
+                    "include": "days",
+                    "key": "DEMO_KEY",
+                    "contentType": "json",
+                },
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                days = resp.json().get("days", [])
+                if days:
+                    if temp_type == "highest" and days[0].get("tempmax") is not None:
+                        all_temps.append(float(days[0]["tempmax"]))
+                    elif temp_type == "lowest" and days[0].get("tempmin") is not None:
+                        all_temps.append(float(days[0]["tempmin"]))
+        except Exception as e:
+            logger.debug("Visual Crossing fallback error: %s", e)
+
+    # 4. NWS API для US городов
     if city.lower() in US_CITIES:
         nws_temp = fetch_nws_forecast(lat, lon, target_date, temp_type)
         if nws_temp is not None:
             all_temps.append(nws_temp)
-            logger.debug("NWS API added member: %.1f°F for %s", nws_temp, city)
 
     logger.info(
         "Ensemble forecast: %d members for %.2f,%.2f on %s (%s)",
@@ -509,6 +591,11 @@ def fetch_ensemble_forecast(
         date_str,
         temp_type,
     )
+
+    # Cache result
+    if all_temps:
+        _forecast_cache[cache_key] = (all_temps, time.monotonic())
+
     return all_temps
 
 
@@ -640,7 +727,7 @@ def scan_weather_markets(
                 forecast_cache[cache_key] = temps
 
             temps = forecast_cache[cache_key]
-            if len(temps) < 10:
+            if len(temps) < 4:
                 _log(f"Weather: мало данных ({len(temps)} members) для {info.city}")
                 continue
 

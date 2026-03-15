@@ -559,6 +559,8 @@ def run_live_trading(max_markets: int = 200) -> None:
         "ВНИМАНИЕ: реальные деньги! Убедитесь что настроен POLYGON_WALLET_PRIVATE_KEY"
     )
 
+    from py_clob_client.clob_types import OrderArgs
+
     from trader.live_executor import get_live_executor
 
     api = PolymarketAPI()
@@ -634,10 +636,126 @@ def run_live_trading(max_markets: int = 200) -> None:
                 storage.add_position(position, new_balance)
                 balance -= signal.size_usd
 
-        summary = storage.get_summary()
+        # Weather scan — те же погодные рынки что в paper mode
+        if settings.weather_enabled:
+            try:
+                from analyzer.weather import scan_weather_markets
+
+                logger.info("Сканируем погодные рынки (live)...")
+                weather_predictions = scan_weather_markets(
+                    min_liquidity=settings.weather_min_liquidity,
+                    max_days_ahead=settings.weather_max_days_ahead,
+                    min_edge=settings.weather_min_edge,
+                )
+                weather_opened = 0
+                # Refresh open_ids to include any just-opened AI positions
+                try:
+                    real_positions = executor.get_live_positions()
+                    open_ids = {
+                        p["market_id"] for p in real_positions if p.get("market_id")
+                    }
+                except Exception:
+                    pass
+
+                for wd in weather_predictions:
+                    wp = wd.prediction
+                    if wp.market_id in open_ids:
+                        continue
+
+                    direction = wd.direction
+                    max_yes = settings.weather_max_yes_price.get(direction, 0.25)
+                    dir_min_edge = settings.weather_direction_min_edge.get(
+                        direction, settings.weather_min_edge
+                    )
+
+                    # Проверки
+                    if weather_opened >= settings.weather_max_positions:
+                        break
+                    if wp.market_probability > max_yes:
+                        continue
+                    if abs(wp.edge) < dir_min_edge:
+                        continue
+                    if abs(wp.edge) > settings.max_edge_threshold:
+                        continue
+                    if wp.confidence < settings.min_confidence:
+                        continue
+
+                    price = wp.market_probability
+                    if wp.recommended_side == "BUY_NO":
+                        price = 1 - wp.market_probability
+
+                    weather_market = api.get_market_by_id(wp.market_id)
+                    if not weather_market or not weather_market.clob_token_ids:
+                        continue
+
+                    # Определяем token_id
+                    if wp.recommended_side == "BUY_YES":
+                        token_id = weather_market.clob_token_ids[0]
+                    elif len(weather_market.clob_token_ids) > 1:
+                        token_id = weather_market.clob_token_ids[1]
+                    else:
+                        token_id = weather_market.clob_token_ids[0]
+
+                    trade_size = settings.weather_trade_size_usd
+                    if trade_size > balance:
+                        logger.info("Weather: недостаточно баланса ($%.2f)", balance)
+                        break
+
+                    size_shares = trade_size / price if price > 0 else 0
+                    try:
+                        order_args = OrderArgs(
+                            token_id=token_id,
+                            price=round(price, 4),
+                            size=round(size_shares, 2),
+                            side="BUY",
+                        )
+                        logger.info(
+                            "WEATHER LIVE ORDER: %s %s @ %.4f | %.2f shares ($%.2f)",
+                            wp.recommended_side,
+                            wp.question[:50],
+                            price,
+                            size_shares,
+                            trade_size,
+                        )
+                        signed = executor.client.create_order(order_args)
+                        result = executor.client.post_order(signed)
+                        logger.info("Weather order posted: %s", result)
+                        if result and result.get("success"):
+                            balance -= trade_size
+                            weather_opened += 1
+                            open_ids.add(wp.market_id)
+                            # Записываем в историю сигналов
+                            signals_history.record_weather_signal(
+                                market_id=wp.market_id,
+                                question=wp.question,
+                                city=wd.city,
+                                target_date=wd.target_date,
+                                temp_type=wd.temp_type,
+                                direction=wd.direction,
+                                threshold=wd.threshold,
+                                ensemble_temps=wd.ensemble_temps,
+                                model_prob=wp.ai_probability,
+                                market_prob=wp.market_probability,
+                                edge=wp.edge,
+                                confidence=wp.confidence,
+                                side=wp.recommended_side,
+                                action="OPEN",
+                                skip_reason="",
+                                entry_price=price,
+                                size_usd=trade_size,
+                                end_date=weather_market.end_date,
+                                volume=weather_market.volume,
+                                liquidity=weather_market.liquidity,
+                            )
+                    except Exception as e:
+                        logger.error("Weather order error: %s", e)
+
+                logger.info("Weather scan: %d позиций открыто", weather_opened)
+            except Exception as e:
+                logger.error("Weather scan error: %s", e)
+
         logger.info("=" * 60)
-        logger.info("ПОРТФЕЛЬ (Live):")
-        logger.info(json.dumps(summary, indent=2, ensure_ascii=False))
+        logger.info("LIVE TRADING завершён | Balance: $%.2f", balance)
 
     finally:
         api.close()
