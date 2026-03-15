@@ -291,7 +291,7 @@ class ClaudeAuth:
 
     @staticmethod
     def _extract_code(raw: str) -> str:
-        """Извлечь code из строки — поддерживает и голый код, и URL."""
+        """Извлечь code из строки — поддерживает голый код, код#state, и URL."""
         raw = raw.strip()
         if "code=" in raw:
             from urllib.parse import parse_qs, urlparse  # noqa: E402
@@ -300,6 +300,9 @@ class ClaudeAuth:
             codes = parse_qs(parsed.query).get("code", [])
             if codes:
                 return codes[0]
+        # Обрезаем #state если пользователь скопировал код вместе с ним
+        if "#" in raw:
+            raw = raw.split("#")[0]
         return raw
 
     def complete_auth_flow(self, code: str, state: str) -> bool:
