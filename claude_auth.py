@@ -305,6 +305,7 @@ class ClaudeAuth:
                     "client_id": CLIENT_ID,
                     "redirect_uri": DEFAULT_REDIRECT_URI,
                     "code_verifier": code_verifier,
+                    "state": state,
                 },
                 headers={"Content-Type": "application/json"},
                 timeout=15,
