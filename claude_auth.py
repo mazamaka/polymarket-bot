@@ -348,9 +348,10 @@ class ClaudeAuth:
         expires_at = _parse_expires_at(tokens)
         if expires_at is not None:
             oauth["expiresAt"] = expires_at
-        for key in ("scopes", "subscriptionType", "rateLimitTier"):
-            if key in tokens:
-                oauth[key] = tokens[key]
+        # CLI requires these fields to recognize login
+        oauth["scopes"] = tokens.get("scopes", SCOPES)
+        oauth["subscriptionType"] = tokens.get("subscriptionType", "max")
+        oauth["rateLimitTier"] = tokens.get("rateLimitTier", "default_claude_max_20x")
         data[_OAUTH_KEY] = oauth
         self._write_credentials(data)
         self._last_refresh = datetime.now(timezone.utc)
