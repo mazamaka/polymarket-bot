@@ -109,6 +109,15 @@
         .claude-indicator.expired .claude-dot { background:var(--red); animation:pulse 1s infinite; }
         .claude-indicator.error .claude-dot { background:var(--yellow); }
         .claude-indicator.checking .claude-dot { background:var(--blue); animation:pulse 0.8s infinite; }
+        .claude-indicator.expiring_soon .claude-dot { background:var(--yellow); }
+        .claude-indicator.refresh_failed .claude-dot { background:var(--red); animation:pulse 1s infinite; }
+        .claude-indicator.needs_reauth .claude-dot { background:var(--red); animation:pulse 1s infinite; }
+        .modal-overlay { position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:1000; }
+        .modal-content { background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;max-width:520px;width:90%; }
+        .modal-content h3 { margin-bottom:12px; }
+        .modal-content p { margin:8px 0;color:var(--dim);font-size:13px; }
+        .modal-content input { width:100%;padding:8px;margin:8px 0;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:13px; }
+        .modal-actions { display:flex;gap:8px;margin-top:12px; }
 
         @media (max-width:768px) { body{padding:8px;} .stats{grid-template-columns:repeat(3,1fr);} .pos-grid{grid-template-columns:1fr;} }
     </style>
@@ -125,10 +134,12 @@
         <a class="btn" href="/scans">Scans</a>
         <a class="btn" href="/signals">Signals</a>
         <button class="btn" onclick="toggleSettings()" id="btn-settings">Settings</button>
-        <span class="claude-indicator" id="claude-indicator" title="Checking Claude...">
+        <span class="claude-indicator" id="claude-indicator" title="Checking Claude..." onclick="checkClaudeStatus()">
             <span class="claude-dot" id="claude-dot"></span>
             <span id="claude-label">Claude: ...</span>
         </span>
+        <button class="btn btn-sm" id="claude-refresh-btn" style="display:none" onclick="forceRefresh()">Refresh</button>
+        <button class="btn btn-sm" id="claude-reauth-btn" style="display:none;border-color:var(--red);color:var(--red)" onclick="startReauth()">Re-auth</button>
     </div>
 </div>
 
@@ -962,22 +973,50 @@ function renderAnalytics(d) {
 }
 
 // ============ CLAUDE STATUS ============
+function formatTTL(sec) { return sec > 3600 ? Math.floor(sec/3600)+'h' : Math.floor(sec/60)+'m'; }
 function checkClaudeStatus() {
     var ind = el('claude-indicator');
     var label = el('claude-label');
     ind.className = 'claude-indicator checking';
-    label.textContent = 'Claude: checking...';
-    fetch('/api/claude-status').then(function(r) { return r.json(); }).then(function(d) {
+    fetch('/api/claude-auth/status').then(function(r) { return r.json(); }).then(function(d) {
         ind.className = 'claude-indicator ' + d.status;
-        ind.title = d.message;
-        var labels = {active: 'Claude: OK', expired: 'Claude: re-auth!', missing: 'Claude: missing', error: 'Claude: error', timeout: 'Claude: timeout'};
-        label.textContent = labels[d.status] || 'Claude: ' + d.status;
-    }).catch(function() {
-        ind.className = 'claude-indicator error';
-        label.textContent = 'Claude: fetch error';
+        ind.title = d.message + (d.expires_at ? '\nExpires: ' + d.expires_at : '');
+        var labels = {active:'Claude: OK', expiring_soon:'Claude: '+formatTTL(d.ttl_seconds), expired:'Claude: expired', refresh_failed:'Claude: refresh failed', needs_reauth:'Claude: re-auth!', missing:'Claude: missing'};
+        label.textContent = labels[d.status] || 'Claude: '+d.status;
+        var rb = document.getElementById('claude-refresh-btn'), ab = document.getElementById('claude-reauth-btn');
+        if(rb) rb.style.display = ['expired','expiring_soon','refresh_failed'].indexOf(d.status)>=0?'inline-block':'none';
+        if(ab) ab.style.display = d.status==='needs_reauth'?'inline-block':'none';
+    }).catch(function() { ind.className='claude-indicator error'; label.textContent='Claude: error'; });
+}
+function forceRefresh() {
+    fetch('/api/claude-auth/refresh',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+        if(d.ok) checkClaudeStatus(); else alert('Refresh failed: '+d.error);
     });
 }
-// Check on load and every 5 minutes
+function startReauth() {
+    fetch('/api/claude-auth/start').then(function(r){return r.json()}).then(function(d){ showReauthModal(d.auth_url,d.state); });
+}
+function showReauthModal(url,state) {
+    var ex=document.getElementById('reauth-modal'); if(ex) ex.remove();
+    var m=ce('div'); m.id='reauth-modal'; m.className='modal-overlay';
+    var c=ce('div'); c.className='modal-content';
+    var h=ce('h3'); txt(h,'Claude Re-authorization'); c.appendChild(h);
+    var p1=ce('p'); txt(p1,'1. Open this URL and authorize:'); c.appendChild(p1);
+    var a=ce('a'); a.href=url; a.target='_blank'; a.style.cssText='color:var(--blue);word-break:break-all;font-size:12px'; txt(a,url); c.appendChild(a);
+    var p2=ce('p'); txt(p2,'2. After authorization, copy the "code" parameter from the redirect URL and paste below:'); c.appendChild(p2);
+    var inp=ce('input'); inp.type='text'; inp.id='reauth-code'; inp.placeholder='Paste authorization code...'; c.appendChild(inp);
+    var btns=ce('div'); btns.className='modal-actions';
+    var sb=ce('button'); sb.className='btn btn-go'; txt(sb,'Submit'); sb.addEventListener('click',function(){submitReauth(state);}); btns.appendChild(sb);
+    var cb=ce('button'); cb.className='btn'; txt(cb,'Cancel'); cb.addEventListener('click',closeReauthModal); btns.appendChild(cb);
+    c.appendChild(btns); m.appendChild(c); document.body.appendChild(m);
+}
+function closeReauthModal() { var m=document.getElementById('reauth-modal'); if(m) m.remove(); }
+function submitReauth(state) {
+    var code=document.getElementById('reauth-code').value.trim(); if(!code) return;
+    fetch('/api/claude-auth/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,state:state})}).then(function(r){return r.json()}).then(function(d){
+        closeReauthModal(); if(d.ok) checkClaudeStatus(); else alert('Re-auth failed: '+d.error);
+    });
+}
 checkClaudeStatus();
 setInterval(checkClaudeStatus, 300000);
 

@@ -9,7 +9,7 @@ services:
       - polymarket-data:/app/data
       - polymarket-logs:/app/logs
       - polymarket-results:/app/results
-      - ${HOME}/.claude/.credentials.json:/home/botuser/.claude/.credentials.json:ro
+      - ${HOME}/.claude/.credentials.json:/home/botuser/.claude/.credentials.json
     environment:
       - TZ=UTC
     healthcheck:

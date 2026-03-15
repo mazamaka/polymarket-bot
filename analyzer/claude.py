@@ -31,6 +31,7 @@ from utils.search import (
 
 logger = logging.getLogger(__name__)
 
+_claude_auth = ClaudeAuth()
 _CLAUDE_ENV: dict[str, str] | None = None
 
 
@@ -81,6 +82,10 @@ def _call_claude(
     timeout: int = 120,
 ) -> str:
     """Вызов Claude через CLI (использует подписку Claude Code Max)."""
+    if not _claude_auth.ensure_valid_token():
+        logger.error("Claude token expired, skipping call")
+        return ""
+
     cmd = [
         "claude",
         "-p",
