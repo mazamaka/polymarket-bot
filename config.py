@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     default_trade_size_usd: float = 20.0  # размер сделки (AI + live)
     paper_trading: bool = True  # paper trading по умолчанию
 
+    # Proxy for CLOB API (geo-block bypass, Canada residential)
+    clob_proxy_url: str = ""
+    polygon_wallet_address: str = ""  # EOA wallet (funder for sig_type=2)
+
+    # Dashboard auth
+    bot_api_key: str = ""  # API key for dashboard access
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 

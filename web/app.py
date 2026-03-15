@@ -3,19 +3,234 @@
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 
+import requests
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 from claude_auth import claude_auth_router
 from trader.storage import PortfolioStorage
 
 logger = logging.getLogger(__name__)
+
+# --- Polymarket Data API: real positions cache ---
+_positions_cache: list[dict] = []
+_positions_cache_ts: float = 0.0
+_POSITIONS_CACHE_TTL: int = 30  # seconds
+
+# --- SL/TP tracking: avoid duplicate sell orders ---
+_sl_tp_triggered: set[str] = set()
+
+
+class SellRequest(BaseModel):
+    """Request body для продажи позиции."""
+
+    token_id: str
+    price: float
+    size: float
+
+
+class CancelOrderRequest(BaseModel):
+    """Request body для отмены ордера."""
+
+    order_id: str
+
+
+def _fetch_live_positions() -> list[dict]:
+    """Получить реальные позиции из Polymarket Data API.
+
+    Data API (data-api.polymarket.com) не требует прокси.
+    Результат кэшируется на 30 секунд.
+    """
+    global _positions_cache, _positions_cache_ts
+
+    now = time.monotonic()
+    if _positions_cache and (now - _positions_cache_ts) < _POSITIONS_CACHE_TTL:
+        return _positions_cache
+
+    from config import settings as _s
+
+    wallet = _s.polygon_wallet_address
+    if not wallet:
+        return []
+
+    try:
+        resp = requests.get(
+            "https://data-api.polymarket.com/positions",
+            params={"user": wallet.lower()},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        raw_positions = resp.json()
+    except requests.RequestException as e:
+        logger.error("Data API positions error: %s", e)
+        return _positions_cache  # return stale cache on error
+
+    positions: list[dict] = []
+    for p in raw_positions:
+        size_val = float(p.get("size", 0))
+        if size_val <= 0:
+            continue
+
+        avg_price = float(p.get("avgPrice", 0))
+        cur_price = float(p.get("curPrice", 0))
+        initial_value = float(p.get("initialValue", 0))
+        current_value = float(p.get("currentValue", 0))
+        cash_pnl = float(p.get("cashPnl", 0))
+        percent_pnl = float(p.get("percentPnl", 0))
+
+        outcome = p.get("outcome", "Yes")
+        side = "BUY_YES" if outcome == "Yes" else "BUY_NO"
+
+        positions.append(
+            {
+                "question": p.get("title", "Unknown"),
+                "side": side,
+                "entry": avg_price,
+                "current": cur_price,
+                "size": initial_value,
+                "current_value": current_value,
+                "pnl": cash_pnl,
+                "pnl_pct": f"{percent_pnl:+.1f}%",
+                "pnl_pct_raw": percent_pnl / 100.0,
+                "market_id": p.get("conditionId", ""),
+                "token_id": p.get("asset", ""),
+                "shares": size_val,
+                "slug": p.get("eventSlug", ""),
+                "end_date": p.get("endDate", ""),
+                "icon": p.get("icon", ""),
+                "outcome": outcome,
+                "redeemable": p.get("redeemable", False),
+                "event_id": p.get("eventId", ""),
+            }
+        )
+
+    _positions_cache = positions
+    _positions_cache_ts = now
+    logger.info("Fetched %d live positions from Data API", len(positions))
+    return positions
+
+
+def _live_portfolio(balance: float) -> dict:
+    """Сформировать portfolio summary для live режима."""
+    positions = _fetch_live_positions()
+
+    invested = sum(p["size"] for p in positions)
+    unrealized_pnl = sum(p["pnl"] for p in positions)
+    total_equity = balance + invested + unrealized_pnl
+    roi_pct = (
+        ((total_equity - balance - invested) / (balance + invested) * 100)
+        if (balance + invested) > 0
+        else 0.0
+    )
+    exposure_pct = round(invested / total_equity * 100, 1) if total_equity > 0 else 0.0
+
+    return {
+        "balance_usd": balance,
+        "invested_usd": round(invested, 4),
+        "total_equity": round(total_equity, 4),
+        "roi_pct": round(roi_pct, 2),
+        "open_positions": len(positions),
+        "total_trades": len(positions),
+        "closed_trades": 0,
+        "win_count": 0,
+        "win_rate": 0,
+        "unrealized_pnl": round(unrealized_pnl, 4),
+        "realized_pnl": 0,
+        "avg_edge": 0,
+        "exposure_pct": exposure_pct,
+        "free_slots": max(0, 35 - len(positions)),
+        "max_positions": 35,
+        "positions": positions,
+        "mode": "live",
+    }
+
+
+_balance_cache: float = 0.0
+_balance_cache_ts: float = 0.0
+
+
+def _fetch_usdc_balance() -> float:
+    """Получить USDC баланс через Data API (без прокси, без CLOB).
+
+    Fallback: если Data API не отдаёт баланс, пробуем CLOB API.
+    Кэш 60 секунд.
+    """
+    global _balance_cache, _balance_cache_ts
+
+    now = time.monotonic()
+    if _balance_cache > 0 and (now - _balance_cache_ts) < 60:
+        return _balance_cache
+
+    from config import settings as _s
+
+    wallet = _s.polygon_wallet_address
+    if not wallet:
+        return 0.0
+
+    # 1. Попробовать Polygon RPC — прочитать USDC баланс напрямую
+    try:
+        usdc_contract = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+        # balanceOf(address) selector = 0x70a08231
+        data = "0x70a08231" + wallet.lower().replace("0x", "").zfill(64)
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "eth_call",
+            "params": [{"to": usdc_contract, "data": data}, "latest"],
+            "id": 1,
+        }
+        resp = requests.post(
+            "https://polygon-bor-rpc.publicnode.com",
+            json=payload,
+            timeout=10,
+        )
+        result = resp.json().get("result", "0x0")
+        balance = int(result, 16) / 1e6
+        if balance > 0:
+            _balance_cache = balance
+            _balance_cache_ts = now
+            return balance
+    except Exception as e:
+        logger.warning("RPC balance check failed: %s", e)
+
+    # 2. Fallback: CLOB API (через прокси)
+    try:
+        from trader.live_executor import get_live_executor
+
+        balance = get_live_executor().get_balance()
+        if balance > 0:
+            _balance_cache = balance
+            _balance_cache_ts = now
+            return balance
+    except Exception as e:
+        logger.warning("CLOB balance check failed: %s", e)
+
+    # 3. Return stale cache
+    return _balance_cache
+
+
+def _get_portfolio_summary():
+    """Get portfolio summary - live or paper depending on mode."""
+    from config import settings as _s
+
+    if not _s.paper_trading:
+        try:
+            balance = _fetch_usdc_balance()
+            return _live_portfolio(balance)
+        except Exception:
+            pass
+    storage = PortfolioStorage()
+    return storage.get_summary()
+
 
 app = FastAPI(title="Polymarket Bot Dashboard")
 app.include_router(claude_auth_router)
@@ -25,6 +240,61 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 RESULTS_DIR = Path("results")
+
+
+# --- Auth middleware ---
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    """API key auth via cookie, query param, or Authorization header."""
+
+    EXEMPT_PATHS = {"/api/portfolio", "/docs", "/openapi.json"}
+
+    async def dispatch(self, request: Request, call_next):
+        from config import settings as _s
+
+        api_key = _s.bot_api_key
+        if not api_key:
+            return await call_next(request)
+
+        path = request.url.path
+
+        # Healthcheck exempt (docker healthcheck from localhost)
+        if path in self.EXEMPT_PATHS:
+            return await call_next(request)
+
+        # Static files exempt
+        if path.startswith("/static/"):
+            return await call_next(request)
+
+        # WebSocket — check query param
+        if path == "/ws":
+            if request.query_params.get("key") == api_key:
+                return await call_next(request)
+            if request.cookies.get("bot_key") == api_key:
+                return await call_next(request)
+            return Response("Unauthorized", status_code=401)
+
+        # Check cookie
+        if request.cookies.get("bot_key") == api_key:
+            return await call_next(request)
+
+        # Check query param — set cookie for future requests
+        if request.query_params.get("key") == api_key:
+            response = await call_next(request)
+            response.set_cookie(
+                "bot_key", api_key, httponly=True, max_age=86400 * 30, samesite="lax"
+            )
+            return response
+
+        # Check Authorization header
+        auth = request.headers.get("authorization", "")
+        if auth == f"Bearer {api_key}":
+            return await call_next(request)
+
+        return Response("Unauthorized", status_code=401)
+
+
+app.add_middleware(APIKeyMiddleware)
+
 
 # WebSocket connections pool
 ws_clients: set[WebSocket] = set()
@@ -71,17 +341,27 @@ def sync_broadcast(event: str, data: dict | str = "") -> None:
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket) -> None:
+    # Auth check (BaseHTTPMiddleware doesn't handle WebSocket)
+    from config import settings as _s
+
+    api_key = _s.bot_api_key
+    if api_key:
+        cookie_key = ws.cookies.get("bot_key", "")
+        query_key = ws.query_params.get("key", "")
+        if cookie_key != api_key and query_key != api_key:
+            await ws.close(code=1008, reason="Unauthorized")
+            return
+
     await ws.accept()
     ws_clients.add(ws)
     logger.info("WS connected (%d clients)", len(ws_clients))
     try:
         # Сразу отправляем текущее состояние
-        storage = PortfolioStorage()
         await ws.send_text(
             json.dumps(
                 {
                     "event": "portfolio",
-                    "data": storage.get_summary(),
+                    "data": _get_portfolio_summary(),
                     "ts": datetime.now().isoformat(),
                 }
             )
@@ -106,9 +386,12 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request) -> HTMLResponse:
-    storage = PortfolioStorage()
-    summary = storage.get_summary()
-    history = list(reversed(storage.history))
+    summary = _get_portfolio_summary()
+    if summary.get("mode") == "live":
+        history = []
+    else:
+        storage = PortfolioStorage()
+        history = list(reversed(storage.history))
     analyses = _load_latest_analyses()
 
     return templates.TemplateResponse(
@@ -235,8 +518,7 @@ async def signals_page(request: Request) -> HTMLResponse:
 
 @app.get("/api/portfolio")
 async def api_portfolio() -> JSONResponse:
-    storage = PortfolioStorage()
-    return JSONResponse(storage.get_summary())
+    return JSONResponse(_get_portfolio_summary())
 
 
 @app.get("/api/history")
@@ -281,14 +563,19 @@ def _set_status(state: str, message: str = "") -> None:
 
 
 def _monitor_bg() -> None:
-    from trader.monitor import update_positions
+    from config import settings as _s
 
     _set_status("monitoring", "Updating prices...")
     try:
-        storage = PortfolioStorage()
-        update_positions(storage)
-        sync_broadcast("portfolio", storage.get_summary())
-        sync_broadcast("history", list(reversed(storage.history)))
+        if not _s.paper_trading:
+            _live_monitor_check()
+        else:
+            from trader.monitor import update_positions
+
+            storage = PortfolioStorage()
+            update_positions(storage)
+            sync_broadcast("history", list(reversed(storage.history)))
+        sync_broadcast("portfolio", _get_portfolio_summary())
         _set_status("idle", "Prices updated")
     except Exception as e:
         logger.error("Monitor error: %s", e)
@@ -296,13 +583,22 @@ def _monitor_bg() -> None:
 
 
 def _run_paper_bg() -> None:
-    from main import run_paper_trading
+    from config import settings
 
-    _set_status("running", "Paper trading in progress...")
-    try:
+    if settings.paper_trading:
+        from main import run_paper_trading
+
+        _set_status("running", "Paper trading in progress...")
         run_paper_trading(max_markets=500, on_log=_broadcast_log)
+    else:
+        from main import run_live_trading
+
+        _set_status("running", "Live trading in progress...")
+        run_live_trading(max_markets=500)
+
+    try:
+        sync_broadcast("portfolio", _get_portfolio_summary())
         storage = PortfolioStorage()
-        sync_broadcast("portfolio", storage.get_summary())
         sync_broadcast("history", list(reversed(storage.history)))
         _set_status("idle", "Paper trading completed")
     except Exception as e:
@@ -312,17 +608,24 @@ def _run_paper_bg() -> None:
 
 def _run_paper_bg_fast() -> None:
     """Быстрый режим для auto-scheduler: больше рынков, без thinking."""
-    from main import run_paper_trading
+    from config import settings
 
-    _set_status("running", "Auto paper trading (500 markets, short-term)...")
+    _set_status("running", "Auto trading (500 markets)...")
     try:
-        run_paper_trading(max_markets=500, on_log=_broadcast_log)
+        if settings.paper_trading:
+            from main import run_paper_trading
+
+            run_paper_trading(max_markets=500, on_log=_broadcast_log)
+        else:
+            from main import run_live_trading
+
+            run_live_trading(max_markets=500)
+        sync_broadcast("portfolio", _get_portfolio_summary())
         storage = PortfolioStorage()
-        sync_broadcast("portfolio", storage.get_summary())
         sync_broadcast("history", list(reversed(storage.history)))
-        _set_status("idle", "Auto paper trading completed")
+        _set_status("idle", "Auto trading completed")
     except Exception as e:
-        logger.exception("Auto paper trading error: %s", e)
+        logger.exception("Auto trading error: %s", e)
         _set_status("idle", f"Error: {e}")
 
 
@@ -339,16 +642,100 @@ def _run_analysis_bg() -> None:
         _set_status("idle", f"Error: {e}")
 
 
+def _live_monitor_check() -> None:
+    """Проверить live позиции на SL/TP и выполнить sell при срабатывании."""
+    global _sl_tp_triggered
+
+    from config import settings as _s
+
+    if _s.paper_trading:
+        return
+
+    # Force cache refresh
+    global _positions_cache_ts
+    _positions_cache_ts = 0.0
+    positions = _fetch_live_positions()
+
+    if not positions:
+        return
+
+    from trader.live_executor import get_live_executor
+
+    for pos in positions:
+        token_id = pos.get("token_id", "")
+        if not token_id or token_id in _sl_tp_triggered:
+            continue
+
+        pnl_pct = pos.get("pnl_pct_raw", 0.0)
+        cur_price = pos.get("current", 0.0)
+        shares = pos.get("shares", 0.0)
+        question = pos.get("question", "")[:50]
+
+        # Stop-loss
+        if pnl_pct <= -_s.stop_loss_pct:
+            sell_price = max(0.001, min(0.999, round(cur_price * 0.95, 4)))
+            logger.warning(
+                "STOP-LOSS: %s | PnL: %.1f%% | Selling %.2f shares @ %.4f",
+                question,
+                pnl_pct * 100,
+                shares,
+                sell_price,
+            )
+            try:
+                executor = get_live_executor()
+                executor.execute_sell_order(token_id, sell_price, shares)
+                _sl_tp_triggered.add(token_id)
+                sync_broadcast(
+                    "log",
+                    f"STOP-LOSS: {question} | PnL: {pnl_pct * 100:+.1f}% | Sell @ {sell_price}",
+                )
+            except Exception as e:
+                logger.error("SL sell error for %s: %s", question, e)
+            continue
+
+        # Take-profit
+        if pnl_pct >= _s.take_profit_pct:
+            sell_price = max(0.001, min(0.999, round(cur_price, 4)))
+            logger.info(
+                "TAKE-PROFIT: %s | PnL: %.1f%% | Selling %.2f shares @ %.4f",
+                question,
+                pnl_pct * 100,
+                shares,
+                sell_price,
+            )
+            try:
+                executor = get_live_executor()
+                executor.execute_sell_order(token_id, sell_price, shares)
+                _sl_tp_triggered.add(token_id)
+                sync_broadcast(
+                    "log",
+                    f"TAKE-PROFIT: {question} | PnL: {pnl_pct * 100:+.1f}% | Sell @ {sell_price}",
+                )
+            except Exception as e:
+                logger.error("TP sell error for %s: %s", question, e)
+
+    # Clean up: remove tokens no longer in positions
+    current_tokens = {p.get("token_id", "") for p in positions}
+    _sl_tp_triggered &= current_tokens
+
+
 async def _price_monitor_loop(interval_sec: int = 180) -> None:
-    """Быстрый мониторинг цен каждые N секунд (без Claude, только Gamma API)."""
+    """Мониторинг цен каждые N секунд. В live режиме — проверяет SL/TP."""
     while True:
         await asyncio.sleep(interval_sec)
         try:
-            storage = PortfolioStorage()
-            if not storage.positions:
-                continue
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, _monitor_bg_silent)
+            from config import settings as _s
+
+            if not _s.paper_trading:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, _live_monitor_check)
+                sync_broadcast("portfolio", _get_portfolio_summary())
+            else:
+                storage = PortfolioStorage()
+                if not storage.positions:
+                    continue
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, _monitor_bg_silent)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -356,7 +743,7 @@ async def _price_monitor_loop(interval_sec: int = 180) -> None:
 
 
 def _monitor_bg_silent() -> None:
-    """Тихое обновление цен — без смены статуса бота."""
+    """Тихое обновление цен — без смены статуса бота (paper mode only)."""
     from trader.monitor import update_positions
 
     try:
@@ -364,7 +751,7 @@ def _monitor_bg_silent() -> None:
         if not storage.positions:
             return
         update_positions(storage)
-        sync_broadcast("portfolio", storage.get_summary())
+        sync_broadcast("portfolio", _get_portfolio_summary())
     except Exception as e:
         logger.error("Silent monitor error: %s", e)
 
@@ -451,6 +838,110 @@ async def api_scheduler_status() -> JSONResponse:
             "trading": trading_running,
         }
     )
+
+
+@app.post("/api/sell")
+async def api_sell(req: SellRequest) -> JSONResponse:
+    """Продать позицию через CLOB API."""
+    from config import settings as _s
+
+    if _s.paper_trading:
+        return JSONResponse(
+            {"status": "error", "message": "Sell disabled in paper mode"},
+            status_code=400,
+        )
+
+    # Validate sell against real positions
+    positions = _fetch_live_positions()
+    matching = [p for p in positions if p.get("token_id") == req.token_id]
+    if not matching:
+        return JSONResponse(
+            {"status": "error", "message": "Position not found for this token_id"},
+            status_code=400,
+        )
+    max_shares = matching[0].get("shares", 0)
+    if req.size > max_shares * 1.01:  # 1% tolerance for rounding
+        return JSONResponse(
+            {
+                "status": "error",
+                "message": f"Size {req.size} exceeds position ({max_shares:.2f} shares)",
+            },
+            status_code=400,
+        )
+
+    try:
+        from trader.live_executor import get_live_executor
+
+        executor = get_live_executor()
+        result = executor.execute_sell_order(
+            token_id=req.token_id,
+            price=req.price,
+            size=req.size,
+        )
+        # Invalidate positions cache
+        global _positions_cache_ts
+        _positions_cache_ts = 0.0
+        sync_broadcast(
+            "log",
+            f"SELL order placed: {req.size:.2f} shares @ {req.price:.4f}",
+        )
+        return JSONResponse({"status": "ok", "result": result})
+    except ValueError as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
+    except Exception as e:
+        logger.error("Sell endpoint error: %s", e)
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/live-orders")
+async def api_live_orders() -> JSONResponse:
+    """Получить открытые ордера из CLOB API."""
+    from config import settings as _s
+
+    if _s.paper_trading:
+        return JSONResponse([])
+
+    try:
+        from trader.live_executor import get_live_executor
+
+        orders = get_live_executor().get_open_orders()
+        return JSONResponse(orders if isinstance(orders, list) else [])
+    except Exception as e:
+        logger.error("Live orders error: %s", e)
+        return JSONResponse([])
+
+
+@app.post("/api/cancel-order")
+async def api_cancel_order(req: CancelOrderRequest) -> JSONResponse:
+    """Отменить открытый ордер."""
+    from config import settings as _s
+
+    if _s.paper_trading:
+        return JSONResponse(
+            {"status": "error", "message": "Cancel disabled in paper mode"},
+            status_code=400,
+        )
+
+    try:
+        from trader.live_executor import get_live_executor
+
+        ok = get_live_executor().cancel_order(req.order_id)
+        if ok:
+            sync_broadcast("log", f"Order {req.order_id[:12]}... cancelled")
+            return JSONResponse({"status": "ok"})
+        return JSONResponse(
+            {"status": "error", "message": "Cancel failed"},
+            status_code=500,
+        )
+    except Exception as e:
+        logger.error("Cancel order error: %s", e)
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/live-positions")
+async def api_live_positions() -> JSONResponse:
+    """Получить реальные позиции из Data API (для дебага)."""
+    return JSONResponse(_fetch_live_positions())
 
 
 def _load_latest_analyses(max_files: int = 3) -> list[dict]:

@@ -32,7 +32,6 @@ TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"
 SCOPES = [
-    "org:create_api_key",
     "user:profile",
     "user:inference",
     "user:sessions:claude_code",
@@ -222,7 +221,7 @@ class ClaudeAuth:
             logger.warning("No refresh token, TTL=%ds", ttl)
             return ttl > 0
         logger.info("Token TTL=%ds, refreshing", ttl)
-        return self._do_refresh(rt)
+        return self._do_refresh(rt, oauth.get("scopes"))
 
     def force_refresh(self) -> tuple[bool, str]:
         """Принудительное обновление. Возвращает (ok, error_or_empty)."""
@@ -232,7 +231,7 @@ class ClaudeAuth:
         rt = oauth.get("refreshToken")
         if not rt:
             return False, "No refresh token available"
-        if self._do_refresh(rt):
+        if self._do_refresh(rt, oauth.get("scopes")):
             return True, ""
         return False, "Refresh failed (token expired or invalid)"
 
@@ -298,8 +297,11 @@ class ClaudeAuth:
 
     # ---- Internal ----
 
-    def _do_refresh(self, refresh_token: str) -> bool:
+    def _do_refresh(
+        self, refresh_token: str, saved_scopes: list[str] | None = None
+    ) -> bool:
         """POST refresh_token grant."""
+        scope_str = " ".join(saved_scopes) if saved_scopes else " ".join(SCOPES)
         try:
             resp = httpx.post(
                 TOKEN_URL,
@@ -307,7 +309,7 @@ class ClaudeAuth:
                     "grant_type": "refresh_token",
                     "refresh_token": refresh_token,
                     "client_id": CLIENT_ID,
-                    "scope": " ".join(SCOPES),
+                    "scope": scope_str,
                 },
                 headers={"Content-Type": "application/json"},
                 timeout=15,

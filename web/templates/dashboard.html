@@ -42,33 +42,34 @@
         .sec-head { padding:10px 14px; border-bottom:1px solid var(--border); font-weight:600; font-size:14px; display:flex; justify-content:space-between; align-items:center; }
         .sec-head .right { font-size:11px; color:var(--dim); font-weight:400; }
 
-        /* Position Cards */
-        .pos-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(380px,1fr)); gap:12px; padding:12px; }
-        .pos-card { background:var(--card2); border:1px solid var(--border); border-radius:8px; padding:14px; position:relative; transition:border-color .2s; cursor:pointer; }
-        .pos-card:hover { border-color:var(--blue); }
-        .pos-card.expanded .pos-details { display:block; }
-        .pos-q { font-size:14px; font-weight:600; margin-bottom:8px; padding-right:60px; }
-        .pos-side { position:absolute; top:14px; right:14px; }
-        .pos-row { display:flex; gap:16px; font-size:12px; color:var(--dim); margin-bottom:4px; flex-wrap:wrap; }
-        .pos-row b { color:var(--text); }
-        .pos-pnl { font-size:16px; font-weight:600; margin:6px 0; }
-        .pos-progress { height:4px; background:var(--border); border-radius:2px; margin:6px 0; overflow:hidden; }
-        .pos-progress-fill { height:100%; border-radius:2px; transition:width .3s; }
-        .pos-meta { display:flex; gap:8px; font-size:11px; color:var(--dim); flex-wrap:wrap; margin-top:6px; }
-        .pos-meta .tag { background:rgba(88,166,255,.08); padding:1px 6px; border-radius:4px; }
-        .pos-timer { display:flex; align-items:center; gap:6px; margin:8px 0; padding:6px 10px; border-radius:6px; font-size:12px; background:rgba(88,166,255,.06); border:1px solid rgba(88,166,255,.15); }
-        .pos-timer .timer-icon { font-size:14px; }
-        .pos-timer .timer-val { font-weight:600; color:var(--blue); font-family:'JetBrains Mono',monospace; font-size:13px; }
-        .pos-timer .timer-label { color:var(--dim); }
-        .pos-timer.urgent { background:rgba(248,81,73,.06); border-color:rgba(248,81,73,.2); }
-        .pos-timer.urgent .timer-val { color:var(--red); }
-        .pos-timer.soon { background:rgba(210,153,34,.06); border-color:rgba(210,153,34,.2); }
-        .pos-timer.soon .timer-val { color:var(--yellow); }
-        .pos-timer.expired { background:rgba(248,81,73,.1); border-color:rgba(248,81,73,.3); }
-        .pos-timer.expired .timer-val { color:var(--red); }
-        .pos-details { display:none; margin-top:10px; padding-top:10px; border-top:1px solid var(--border); font-size:12px; color:var(--dim); line-height:1.6; }
-        .pos-details a { color:var(--blue); text-decoration:none; }
-        .pos-details a:hover { text-decoration:underline; }
+        /* Position & Order Tables (Polymarket-style) */
+        .ptable { width:100%; border-collapse:collapse; }
+        .ptable th { text-align:left; padding:8px 12px; font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; border-bottom:1px solid var(--border); background:rgba(0,0,0,.2); white-space:nowrap; }
+        .ptable td { padding:10px 12px; font-size:13px; border-bottom:1px solid var(--border); vertical-align:middle; }
+        .ptable tr:last-child td { border-bottom:none; }
+        .ptable tr:hover { background:rgba(88,166,255,.04); }
+        .ptable .col-market { min-width:200px; max-width:350px; }
+        .ptable .col-num { text-align:right; font-family:'JetBrains Mono',monospace; font-size:12px; }
+        .pos-market-cell { display:flex; align-items:center; gap:10px; }
+        .pos-icon { width:32px; height:32px; border-radius:6px; object-fit:cover; flex-shrink:0; }
+        .pos-market-info { display:flex; flex-direction:column; gap:2px; min-width:0; }
+        .pos-market-name { font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:400px; }
+        .pos-market-name a { color:var(--text); text-decoration:none; }
+        .pos-market-name a:hover { color:var(--blue); }
+        .pos-market-timer { font-size:10px; color:var(--dim); }
+        .pos-market-timer.urgent { color:var(--red); }
+        .pos-market-timer.soon { color:var(--yellow); }
+        .pos-price-arrow { display:flex; align-items:center; gap:4px; font-family:'JetBrains Mono',monospace; font-size:12px; }
+        .pos-price-arrow .arrow { color:var(--dim); font-size:10px; }
+        .pos-pnl-cell { text-align:right; }
+        .pos-pnl-val { font-weight:600; font-size:13px; display:block; }
+        .pos-pnl-pct { font-size:11px; display:block; }
+        .btn-action { padding:4px 14px; border-radius:6px; cursor:pointer; font-size:11px; font-weight:600; transition:all .15s; border:1px solid; }
+        .btn-sell { background:rgba(248,81,73,.1); color:var(--red); border-color:var(--red); }
+        .btn-sell:hover { background:rgba(248,81,73,.25); }
+        .btn-cancel { background:rgba(210,153,34,.1); color:var(--yellow); border-color:var(--yellow); }
+        .btn-cancel:hover { background:rgba(210,153,34,.25); }
+        .btn-action:disabled { opacity:.4; cursor:not-allowed; }
 
         /* Badges */
         .badge { display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; font-weight:600; }
@@ -119,7 +120,7 @@
         .modal-content input { width:100%;padding:8px;margin:8px 0;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:13px; }
         .modal-actions { display:flex;gap:8px;margin-top:12px; }
 
-        @media (max-width:768px) { body{padding:8px;} .stats{grid-template-columns:repeat(3,1fr);} .pos-grid{grid-template-columns:1fr;} }
+        @media (max-width:768px) { body{padding:8px;} .stats{grid-template-columns:repeat(3,1fr);} .ptable { font-size:11px; } .pos-market-name { max-width:180px; } }
     </style>
 </head>
 <body>
@@ -279,6 +280,12 @@
 <div class="section">
     <div class="sec-head"><span>Open Positions</span><span class="right" id="pos-count">{{ summary.open_positions }} active</span></div>
     <div id="positions-body"></div>
+</div>
+
+<!-- Open Orders -->
+<div class="section" id="orders-section">
+    <div class="sec-head"><span>Open Orders</span><span class="right" id="orders-count">0 orders</span></div>
+    <div id="orders-body"><div class="empty">No open orders</div></div>
 </div>
 
 <!-- Trade History -->
@@ -515,148 +522,113 @@ function renderPositions(positions) {
         return;
     }
 
-    const grid = ce('div'); grid.className = 'pos-grid';
-    positions.forEach(p => {
-        const card = ce('div'); card.className = 'pos-card';
-        card.onclick = function() { card.classList.toggle('expanded'); };
+    const table = ce('table'); table.className = 'ptable';
+    const thead = ce('thead'); const hr = ce('tr');
+    [
+        {t:'Market', cls:'col-market'},
+        {t:'Outcome'},
+        {t:'Avg \u2192 Now'},
+        {t:'Shares', cls:'col-num'},
+        {t:'Invested', cls:'col-num'},
+        {t:'Value', cls:'col-num'},
+        {t:'P&L', cls:'col-num'},
+        {t:''},
+    ].forEach(h => { const th = ce('th'); txt(th, h.t); if (h.cls) th.className = h.cls; hr.appendChild(th); });
+    thead.appendChild(hr); table.appendChild(thead);
 
+    const tbody = ce('tbody');
+    positions.forEach(p => {
+        const tr = ce('tr');
         const isYes = (p.side||'').includes('YES');
         const pnlColor = p.pnl >= 0 ? 'green' : 'red';
 
-        // Question
-        const q = ce('div'); q.className = 'pos-q'; txt(q, p.question); card.appendChild(q);
-
-        // Side badge
-        const side = ce('div'); side.className = 'pos-side';
-        const badge = ce('span'); badge.className = 'badge ' + (isYes ? 'b-yes' : 'b-no');
-        txt(badge, isYes ? 'BUY YES' : 'BUY NO'); side.appendChild(badge); card.appendChild(side);
-
-        // Price row
-        const r1 = ce('div'); r1.className = 'pos-row';
-        r1.append(makeSpan('Entry: ', p.entry.toFixed(4), true), makeSpan('Current: ', p.current.toFixed(4), true), makeSpan('Size: ', '$'+p.size.toFixed(2), true));
-        card.appendChild(r1);
-
-        // PnL
-        const pnl = ce('div'); pnl.className = 'pos-pnl ' + pnlColor;
-        txt(pnl, '$' + (p.pnl>=0?'+':'') + p.pnl.toFixed(2) + ' (' + p.pnl_pct + ')');
-        card.appendChild(pnl);
-
-        // Progress bar
-        const prog = ce('div'); prog.className = 'pos-progress';
-        const fill = ce('div'); fill.className = 'pos-progress-fill';
-        const barW = Math.min(100, Math.max(5, (p.size>0?(p.pnl/p.size*100):0)+50));
-        fill.setAttribute('style', 'width:'+barW+'%;background:var(--'+pnlColor+')');
-        prog.appendChild(fill); card.appendChild(prog);
-
-        // Countdown timer
-        if (p.end_date) {
-            const timer = ce('div'); timer.className = 'pos-timer';
-            timer.setAttribute('data-end', p.end_date);
-            const icon = ce('span'); icon.className = 'timer-icon'; txt(icon, '\u23F1'); timer.appendChild(icon);
-            const val = ce('span'); val.className = 'timer-val'; timer.appendChild(val);
-            const lbl = ce('span'); lbl.className = 'timer-label'; timer.appendChild(lbl);
-            updateTimerEl(timer);
-            card.appendChild(timer);
+        // Market cell: icon + name + timer
+        const marketTd = ce('td'); marketTd.className = 'col-market';
+        const mcell = ce('div'); mcell.className = 'pos-market-cell';
+        if (p.icon) {
+            const img = ce('img'); img.className = 'pos-icon'; img.src = p.icon; img.alt = '';
+            img.onerror = function() { this.style.display = 'none'; };
+            mcell.appendChild(img);
         }
-
-        // Meta tags
-        const meta = ce('div'); meta.className = 'pos-meta';
-        if (p.edge) meta.appendChild(makeTag('Edge: ' + (p.edge>0?'+':'') + p.edge.toFixed(1) + '%'));
-        if (p.confidence) meta.appendChild(makeTag('Conf: ' + p.confidence + '%'));
-        if (p.ai_prob) meta.appendChild(makeTag('AI: ' + p.ai_prob + '%'));
-        if (p.volume) meta.appendChild(makeTag('Vol: $' + formatK(p.volume)));
-        card.appendChild(meta);
-
-        // Expandable details
-        const details = ce('div'); details.className = 'pos-details';
-        if (p.reasoning) { const r = ce('div'); txt(r, 'AI Reasoning: ' + p.reasoning); details.appendChild(r); }
+        const info = ce('div'); info.className = 'pos-market-info';
+        const nameEl = ce('div'); nameEl.className = 'pos-market-name';
         if (p.slug) {
-            const link = ce('a');
-            link.href = 'https://polymarket.com/event/' + p.slug;
-            link.target = '_blank';
-            txt(link, 'View on Polymarket');
-            details.appendChild(ce('br'));
-            details.appendChild(link);
+            const a = ce('a'); a.href = 'https://polymarket.com/event/' + p.slug; a.target = '_blank';
+            txt(a, p.question); nameEl.appendChild(a);
+        } else { txt(nameEl, p.question); }
+        info.appendChild(nameEl);
+        if (p.end_date) {
+            const timer = ce('div'); timer.className = 'pos-market-timer';
+            timer.setAttribute('data-end', p.end_date);
+            _updateInlineTimer(timer); info.appendChild(timer);
         }
-        const opened = ce('div');
-        txt(opened, 'Opened: ' + (p.opened||'').replace('T',' ').slice(0,19) + ' | Market ID: ' + p.market_id);
-        details.appendChild(opened);
-        card.appendChild(details);
+        mcell.appendChild(info); marketTd.appendChild(mcell); tr.appendChild(marketTd);
 
-        grid.appendChild(card);
+        // Outcome badge
+        const outTd = ce('td');
+        const badge = ce('span'); badge.className = 'badge ' + (isYes ? 'b-yes' : 'b-no');
+        txt(badge, isYes ? 'Yes' : 'No'); outTd.appendChild(badge); tr.appendChild(outTd);
+
+        // Avg -> Now price
+        const priceTd = ce('td');
+        const priceDiv = ce('div'); priceDiv.className = 'pos-price-arrow';
+        const fmtPrice = v => v < 0.01 ? v.toFixed(4) : v.toFixed(2);
+        const entryS = ce('span'); txt(entryS, fmtPrice(p.entry));
+        const arrow = ce('span'); arrow.className = 'arrow'; txt(arrow, '\u2192');
+        const curS = ce('span'); curS.className = pnlColor; txt(curS, fmtPrice(p.current));
+        priceDiv.append(entryS, arrow, curS); priceTd.appendChild(priceDiv); tr.appendChild(priceTd);
+
+        // Shares
+        const sharesTd = ce('td'); sharesTd.className = 'col-num';
+        txt(sharesTd, String(p.shares || 0)); tr.appendChild(sharesTd);
+
+        // Invested
+        const invTd = ce('td'); invTd.className = 'col-num';
+        txt(invTd, '$' + p.size.toFixed(2)); tr.appendChild(invTd);
+
+        // Current value
+        const valTd = ce('td'); valTd.className = 'col-num';
+        txt(valTd, '$' + (p.current_value != null ? p.current_value.toFixed(3) : '—')); tr.appendChild(valTd);
+
+        // P&L
+        const pnlTd = ce('td'); pnlTd.className = 'col-num pos-pnl-cell';
+        const pnlVal = ce('span'); pnlVal.className = 'pos-pnl-val ' + pnlColor;
+        txt(pnlVal, '$' + (p.pnl>=0?'+':'') + p.pnl.toFixed(2)); pnlTd.appendChild(pnlVal);
+        const pnlPct = ce('span'); pnlPct.className = 'pos-pnl-pct ' + pnlColor;
+        txt(pnlPct, p.pnl_pct); pnlTd.appendChild(pnlPct);
+        tr.appendChild(pnlTd);
+
+        // Action
+        const actTd = ce('td');
+        if (p.token_id && p.shares > 0) {
+            const btn = ce('button'); btn.className = 'btn-action btn-sell';
+            txt(btn, 'Sell');
+            btn.onclick = function(e) { e.stopPropagation(); sellPosition(p.token_id, p.shares, p.current, p.question); };
+            actTd.appendChild(btn);
+        }
+        tr.appendChild(actTd);
+
+        tbody.appendChild(tr);
     });
-    body.appendChild(grid);
+    table.appendChild(tbody);
+    body.appendChild(table);
 }
 
-function makeSpan(label, val, bold) {
-    const s = ce('span');
-    s.textContent = label;
-    const b = ce(bold ? 'b' : 'span');
-    b.textContent = val;
-    s.appendChild(b);
-    return s;
-}
-
-function makeTag(text) {
-    const s = ce('span'); s.className = 'tag'; txt(s, text); return s;
-}
-
-function updateTimerEl(timerEl) {
-    const endDate = timerEl.getAttribute('data-end');
+function _updateInlineTimer(el) {
+    const endDate = el.getAttribute('data-end');
     if (!endDate) return;
-    const end = new Date(endDate);
-    const now = new Date();
-    const diff = end - now;
-    const valEl = timerEl.querySelector('.timer-val');
-    const lblEl = timerEl.querySelector('.timer-label');
-
-    if (diff <= 0) {
-        timerEl.className = 'pos-timer expired';
-        txt(valEl, 'RESOLVED');
-        txt(lblEl, 'Market closed');
-        return;
-    }
-
-    const days = Math.floor(diff / 86400000);
-    const hours = Math.floor((diff % 86400000) / 3600000);
-    const mins = Math.floor((diff % 3600000) / 60000);
-    const secs = Math.floor((diff % 60000) / 1000);
-
-    if (days > 30) {
-        txt(valEl, days + 'd');
-        txt(lblEl, 'until resolution');
-    } else if (days > 0) {
-        txt(valEl, days + 'd ' + hours + 'h ' + mins + 'm');
-        txt(lblEl, 'until resolution');
-        timerEl.className = days <= 3 ? 'pos-timer soon' : 'pos-timer';
-    } else if (hours > 0) {
-        txt(valEl, hours + 'h ' + mins + 'm ' + secs + 's');
-        txt(lblEl, 'until resolution');
-        timerEl.className = hours <= 6 ? 'pos-timer urgent' : 'pos-timer soon';
-    } else {
-        txt(valEl, mins + 'm ' + secs + 's');
-        txt(lblEl, 'CLOSING SOON!');
-        timerEl.className = 'pos-timer urgent';
-    }
+    const diff = new Date(endDate) - new Date();
+    if (diff <= 0) { txt(el, 'Resolved'); el.className = 'pos-market-timer urgent'; return; }
+    const d = Math.floor(diff / 86400000), h = Math.floor((diff % 86400000) / 3600000), m = Math.floor((diff % 3600000) / 60000);
+    if (d > 0) { txt(el, d + 'd ' + h + 'h left'); el.className = 'pos-market-timer' + (d <= 3 ? ' soon' : ''); }
+    else if (h > 0) { txt(el, h + 'h ' + m + 'm left'); el.className = 'pos-market-timer' + (h <= 6 ? ' urgent' : ' soon'); }
+    else { txt(el, m + 'm left'); el.className = 'pos-market-timer urgent'; }
 }
 
-function updateAllTimers() {
-    document.querySelectorAll('.pos-timer[data-end]').forEach(updateTimerEl);
+function _updateAllInlineTimers() {
+    document.querySelectorAll('.pos-market-timer[data-end]').forEach(_updateInlineTimer);
 }
-setInterval(updateAllTimers, 1000);
-
-function formatCountdown(endDate) {
-    if (!endDate) return '';
-    const end = new Date(endDate);
-    const now = new Date();
-    const diff = end - now;
-    if (diff <= 0) return 'Expired';
-    const days = Math.floor(diff / 86400000);
-    const hours = Math.floor((diff % 86400000) / 3600000);
-    if (days > 0) return days + 'd ' + hours + 'h left';
-    const mins = Math.floor((diff % 3600000) / 60000);
-    return hours + 'h ' + mins + 'm left';
-}
+setInterval(_updateAllInlineTimers, 60000);
 
 function formatK(n) {
     if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
@@ -1032,6 +1004,145 @@ function showCodeModal(state) {
 checkClaudeStatus();
 setInterval(checkClaudeStatus, 300000);
 
+// ============ SELL / ORDERS ============
+async function sellPosition(tokenId, shares, currentPrice, question) {
+    const shortQ = (question || '').slice(0, 50);
+    const suggestPrice = Math.max(0.001, Math.min(0.999, currentPrice));
+    const price = parseFloat(prompt('Sell price (0.001–0.999, current: ' + currentPrice.toFixed(4) + '):', suggestPrice.toFixed(4)));
+    if (!price || isNaN(price) || price < 0.001 || price > 0.999) { showToast('Price must be 0.001–0.999'); return; }
+    const size = parseFloat(prompt('Shares to sell (max: ' + shares + '):', shares));
+    if (!size || isNaN(size) || size <= 0 || size > shares) { showToast('Invalid size'); return; }
+    if (!confirm('SELL ' + size + ' shares @ ' + price.toFixed(4) + '\n' + shortQ + '\n\nConfirm?')) return;
+
+    addLog('Selling ' + size + ' shares @ ' + price.toFixed(4) + '...', 'trade');
+    try {
+        const r = await fetch('/api/sell', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({token_id: tokenId, price: price, size: size})
+        });
+        const d = await r.json();
+        if (d.status === 'ok') {
+            showToast('Sell order placed!');
+            addLog('SELL order placed: ' + size + ' @ ' + price.toFixed(4), 'trade');
+            setTimeout(loadOpenOrders, 2000);
+        } else {
+            showToast('Sell failed: ' + (d.message || 'unknown'));
+            addLog('Sell failed: ' + (d.message || 'unknown'), 'error');
+        }
+    } catch (e) {
+        showToast('Network error'); addLog('Sell error: ' + e.message, 'error');
+    }
+}
+
+async function loadOpenOrders() {
+    try {
+        const r = await fetch('/api/live-orders');
+        const orders = await r.json();
+        renderOpenOrders(orders);
+    } catch (e) {
+        // silently fail
+    }
+}
+
+function renderOpenOrders(orders) {
+    const body = el('orders-body');
+    body.textContent = '';
+    txt(el('orders-count'), (orders.length || 0) + ' orders');
+
+    if (!orders || !orders.length) {
+        const d = ce('div'); d.className = 'empty'; txt(d, 'No open orders'); body.appendChild(d);
+        return;
+    }
+
+    const table = ce('table'); table.className = 'ptable';
+    const thead = ce('thead'); const hr = ce('tr');
+    [
+        {t:'Order ID'},
+        {t:'Side'},
+        {t:'Token'},
+        {t:'Price', cls:'col-num'},
+        {t:'Size', cls:'col-num'},
+        {t:'Filled', cls:'col-num'},
+        {t:'Status'},
+        {t:''},
+    ].forEach(h => { const th = ce('th'); txt(th, h.t); if (h.cls) th.className = h.cls; hr.appendChild(th); });
+    thead.appendChild(hr); table.appendChild(thead);
+
+    const tbody = ce('tbody');
+    orders.forEach(o => {
+        const tr = ce('tr');
+        const oid = o.id || o.order_id || '';
+        const isSell = (o.side || '').toUpperCase() === 'SELL';
+        const origSize = parseFloat(o.original_size || o.size || 0);
+        const remainSize = parseFloat(o.size_matched || 0);
+        const filled = origSize > 0 ? Math.round(remainSize / origSize * 100) : 0;
+
+        // Order ID
+        const idTd = ce('td'); idTd.style.cssText = 'font-size:11px;color:var(--dim);font-family:JetBrains Mono,monospace';
+        txt(idTd, oid.slice(0, 10) + '...'); tr.appendChild(idTd);
+
+        // Side badge
+        const sideTd = ce('td');
+        const badge = ce('span'); badge.className = 'badge ' + (isSell ? 'b-no' : 'b-yes');
+        txt(badge, isSell ? 'SELL' : 'BUY'); sideTd.appendChild(badge); tr.appendChild(sideTd);
+
+        // Token
+        const tokTd = ce('td'); tokTd.style.cssText = 'font-size:11px;font-family:JetBrains Mono,monospace;color:var(--dim)';
+        txt(tokTd, (o.asset_id || o.token_id || '').slice(0, 14) + '...'); tr.appendChild(tokTd);
+
+        // Price
+        const priceTd = ce('td'); priceTd.className = 'col-num';
+        const op = parseFloat(o.price || 0);
+        txt(priceTd, op < 0.01 ? op.toFixed(4) : op.toFixed(2)); tr.appendChild(priceTd);
+
+        // Size
+        const sizeTd = ce('td'); sizeTd.className = 'col-num';
+        txt(sizeTd, origSize.toFixed(2)); tr.appendChild(sizeTd);
+
+        // Filled
+        const filledTd = ce('td'); filledTd.className = 'col-num';
+        txt(filledTd, filled + '%'); tr.appendChild(filledTd);
+
+        // Status
+        const statusTd = ce('td');
+        const statusBadge = ce('span'); statusBadge.className = 'badge b-open';
+        txt(statusBadge, o.status || o.order_status || 'LIVE'); statusTd.appendChild(statusBadge); tr.appendChild(statusTd);
+
+        // Cancel button
+        const actTd = ce('td');
+        const cancelBtn = ce('button'); cancelBtn.className = 'btn-action btn-cancel';
+        txt(cancelBtn, 'Cancel');
+        cancelBtn.onclick = function() { cancelOrder(oid); };
+        actTd.appendChild(cancelBtn);
+        tr.appendChild(actTd);
+
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    body.appendChild(table);
+}
+
+async function cancelOrder(orderId) {
+    if (!confirm('Cancel order ' + orderId.slice(0, 12) + '...?')) return;
+    try {
+        const r = await fetch('/api/cancel-order', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({order_id: orderId})
+        });
+        const d = await r.json();
+        if (d.status === 'ok') {
+            showToast('Order cancelled'); addLog('Order cancelled: ' + orderId.slice(0, 12), 'trade');
+            setTimeout(loadOpenOrders, 1000);
+        } else {
+            showToast('Cancel failed: ' + (d.message || 'unknown'));
+        }
+    } catch (e) {
+        showToast('Network error');
+    }
+}
+
 // ============ INIT ============
 renderPositions(initialData.positions || []);
 _fullHistory = initialHistory;
@@ -1040,6 +1151,7 @@ drawEquity(initialData.equity_curve || []);
 addLog('Dashboard loaded', 'info');
 connectWS();
 checkScheduler();
+loadOpenOrders();
 </script>
 </body>
 </html>

@@ -559,7 +559,7 @@ def run_live_trading(max_markets: int = 200) -> None:
         "ВНИМАНИЕ: реальные деньги! Убедитесь что настроен POLYGON_WALLET_PRIVATE_KEY"
     )
 
-    from trader.live_executor import LiveExecutor
+    from trader.live_executor import get_live_executor
 
     api = PolymarketAPI()
     analyzer = ClaudeAnalyzer()
@@ -567,7 +567,7 @@ def run_live_trading(max_markets: int = 200) -> None:
     risk_mgr = RiskManager(positions=storage.positions)
 
     try:
-        executor = LiveExecutor()
+        executor = get_live_executor()
         balance = executor.get_balance()
         logger.info("Wallet balance: $%.2f USDC", balance)
 
@@ -587,7 +587,14 @@ def run_live_trading(max_markets: int = 200) -> None:
             logger.warning("Нет торгуемых рынков")
             return
 
-        open_ids = storage.get_open_market_ids()
+        # Dedup: проверяем реальные позиции из Data API, не paper storage
+        try:
+            real_positions = executor.get_live_positions()
+            open_ids = {p["market_id"] for p in real_positions if p.get("market_id")}
+            logger.info("Live dedup: %d open market IDs from Data API", len(open_ids))
+        except Exception as e:
+            logger.warning("Failed to get live positions for dedup, using paper: %s", e)
+            open_ids = storage.get_open_market_ids()
         to_screen = [m for m in tradeable if m.id not in open_ids]
         interesting = analyzer.batch_screen_markets(to_screen)
 
@@ -648,7 +655,10 @@ def run_scheduler(interval_min: int, max_markets: int) -> None:
         )
 
         try:
-            run_paper_trading(max_markets=max_markets)
+            if settings.paper_trading:
+                run_paper_trading(max_markets=max_markets)
+            else:
+                run_live_trading(max_markets=max_markets)
         except KeyboardInterrupt:
             raise
         except Exception as e:

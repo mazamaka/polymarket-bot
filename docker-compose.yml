@@ -10,6 +10,8 @@ services:
       - polymarket-logs:/app/logs
       - polymarket-results:/app/results
       - ${HOME}/.claude/.credentials-server.json:/home/botuser/.claude/.credentials.json
+    env_file:
+      - .env
     environment:
       - TZ=UTC
     healthcheck:
