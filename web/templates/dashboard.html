@@ -102,6 +102,14 @@
         .setting-item .hint { font-size:10px; color:var(--dim); }
         .settings-actions { margin-top:12px; display:flex; gap:8px; justify-content:flex-end; }
 
+        /* Claude indicator */
+        .claude-indicator { display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border-radius:6px; font-size:11px; border:1px solid var(--border); background:var(--card); cursor:pointer; }
+        .claude-dot { width:8px; height:8px; border-radius:50%; background:var(--dim); flex-shrink:0; }
+        .claude-indicator.active .claude-dot { background:var(--green); }
+        .claude-indicator.expired .claude-dot { background:var(--red); animation:pulse 1s infinite; }
+        .claude-indicator.error .claude-dot { background:var(--yellow); }
+        .claude-indicator.checking .claude-dot { background:var(--blue); animation:pulse 0.8s infinite; }
+
         @media (max-width:768px) { body{padding:8px;} .stats{grid-template-columns:repeat(3,1fr);} .pos-grid{grid-template-columns:1fr;} }
     </style>
 </head>
@@ -117,6 +125,10 @@
         <a class="btn" href="/scans">Scans</a>
         <a class="btn" href="/signals">Signals</a>
         <button class="btn" onclick="toggleSettings()" id="btn-settings">Settings</button>
+        <span class="claude-indicator" id="claude-indicator" title="Checking Claude...">
+            <span class="claude-dot" id="claude-dot"></span>
+            <span id="claude-label">Claude: ...</span>
+        </span>
     </div>
 </div>
 
@@ -948,6 +960,26 @@ function renderAnalytics(d) {
     appendStat(sigGrid, 'By Action', actionEntries || 'N/A', '');
     appendStat(sigGrid, 'Open Rate', openRate + '%', parseFloat(openRate) > 0 ? 'green' : '');
 }
+
+// ============ CLAUDE STATUS ============
+function checkClaudeStatus() {
+    var ind = el('claude-indicator');
+    var label = el('claude-label');
+    ind.className = 'claude-indicator checking';
+    label.textContent = 'Claude: checking...';
+    fetch('/api/claude-status').then(function(r) { return r.json(); }).then(function(d) {
+        ind.className = 'claude-indicator ' + d.status;
+        ind.title = d.message;
+        var labels = {active: 'Claude: OK', expired: 'Claude: re-auth!', missing: 'Claude: missing', error: 'Claude: error', timeout: 'Claude: timeout'};
+        label.textContent = labels[d.status] || 'Claude: ' + d.status;
+    }).catch(function() {
+        ind.className = 'claude-indicator error';
+        label.textContent = 'Claude: fetch error';
+    });
+}
+// Check on load and every 5 minutes
+checkClaudeStatus();
+setInterval(checkClaudeStatus, 300000);
 
 // ============ INIT ============
 renderPositions(initialData.positions || []);

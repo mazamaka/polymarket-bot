@@ -451,6 +451,56 @@ async def api_scheduler_status() -> JSONResponse:
     )
 
 
+def _check_claude_cli() -> dict:
+    """Проверить доступность Claude CLI и валидность OAuth токена."""
+    import os
+    import subprocess
+
+    env = os.environ.copy()
+    env.pop("CLAUDECODE", None)
+    env.setdefault("HOME", os.path.expanduser("~"))
+    try:
+        result = subprocess.run(
+            [
+                "claude",
+                "-p",
+                "--output-format",
+                "text",
+                "--model",
+                "haiku",
+                "--permission-mode",
+                "bypassPermissions",
+                "--no-session-persistence",
+            ],
+            input="respond with just OK",
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=env,
+        )
+        if result.returncode == 0 and "OK" in result.stdout:
+            return {"status": "active", "message": "Claude Code subscription active"}
+        stderr = result.stderr[:300] or result.stdout[:300]
+        if "expired" in stderr.lower() or "authentication" in stderr.lower():
+            return {
+                "status": "expired",
+                "message": "OAuth token expired — re-auth needed",
+            }
+        return {"status": "error", "message": stderr.strip()[:200]}
+    except FileNotFoundError:
+        return {"status": "missing", "message": "Claude CLI not installed"}
+    except subprocess.TimeoutExpired:
+        return {"status": "timeout", "message": "Claude CLI timeout (15s)"}
+
+
+@app.get("/api/claude-status")
+async def api_claude_status() -> JSONResponse:
+    """Проверить статус подписки Claude Code."""
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _check_claude_cli)
+    return JSONResponse(result)
+
+
 def _load_latest_analyses(max_files: int = 3) -> list[dict]:
     if not RESULTS_DIR.exists():
         return []
