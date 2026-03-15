@@ -1009,10 +1009,11 @@ function showCodeModal(state) {
     var btns=ce('div'); btns.className='modal-actions';
     var sb=ce('button'); sb.className='btn btn-go'; txt(sb,'Submit'); sb.addEventListener('click',function(){
         var code=document.getElementById('reauth-code').value.trim(); if(!code) return;
+        sb.disabled=true; txt(sb,'Submitting...');
         fetch('/api/claude-auth/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,state:state})}).then(function(r){return r.json()}).then(function(d){
             document.getElementById('reauth-modal').remove();
-            if(d.ok){ addLog('Claude: authorized!','info'); checkClaudeStatus(); } else alert('Failed: '+d.error);
-        });
+            if(d.ok){ addLog('Claude: authorized!','info'); checkClaudeStatus(); } else { alert('Failed: '+d.error); }
+        }).catch(function(e){ sb.disabled=false; txt(sb,'Submit'); alert('Network error: '+e.message); });
     }); btns.appendChild(sb);
     var cb=ce('button'); cb.className='btn'; txt(cb,'Cancel'); cb.addEventListener('click',function(){ document.getElementById('reauth-modal').remove(); }); btns.appendChild(cb);
     c.appendChild(btns); m.appendChild(c); document.body.appendChild(m);

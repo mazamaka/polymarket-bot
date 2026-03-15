@@ -14,7 +14,6 @@ import json
 import logging
 import os
 import secrets
-import tempfile
 import time
 from datetime import datetime, timezone
 from enum import Enum
@@ -123,22 +122,12 @@ class ClaudeAuth:
             return None
 
     def _write_credentials(self, data: dict[str, Any]) -> None:
-        """Atomic write с fcntl.flock для защиты от гонок между контейнерами."""
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=str(self._creds_path.parent),
-            suffix=".tmp",
-        )
-        try:
-            with os.fdopen(tmp_fd, "w") as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-                json.dump(data, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, str(self._creds_path))
-        except BaseException:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-            raise
+        """Write credentials directly with flock (bind mount compatible)."""
+        with open(self._creds_path, "w") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
 
     def _get_expiry_info(self, oauth: dict[str, Any]) -> tuple[datetime, int]:
         """Вернуть (expires_at_datetime, ttl_seconds) из oauth данных."""
@@ -308,8 +297,7 @@ class ClaudeAuth:
     def complete_auth_flow(self, code: str, state: str) -> bool:
         """Обменять authorization code на токены. Возвращает True при успехе."""
         code = self._extract_code(code)
-        code_verifier = self._pending_auth.pop(state, None)
-        self._save_pending()
+        code_verifier = self._pending_auth.get(state)
         if code_verifier is None:
             logger.warning("Unknown or expired state: %s", state)
             return False
@@ -354,6 +342,8 @@ class ClaudeAuth:
                 oauth[key] = tokens[key]
         data[_OAUTH_KEY] = oauth
         self._write_credentials(data)
+        self._pending_auth.pop(state, None)
+        self._save_pending()
         self._last_refresh = datetime.now(timezone.utc)
         logger.info("OAuth code exchange successful")
         return True
