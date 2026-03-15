@@ -985,7 +985,7 @@ function checkClaudeStatus() {
         label.textContent = labels[d.status] || 'Claude: '+d.status;
         var rb = document.getElementById('claude-refresh-btn'), ab = document.getElementById('claude-reauth-btn');
         if(rb) rb.style.display = ['expired','expiring_soon','refresh_failed'].indexOf(d.status)>=0?'inline-block':'none';
-        if(ab) ab.style.display = d.status==='active'?'none':'inline-block';
+        if(ab) ab.style.display = 'inline-block';
     }).catch(function() { ind.className='claude-indicator error'; label.textContent='Claude: error'; });
 }
 function forceRefresh() {
