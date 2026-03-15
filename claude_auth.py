@@ -28,11 +28,12 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-AUTHORIZE_URL = "https://platform.claude.com/oauth/authorize"
+AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
 TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"
 SCOPES = [
+    "org:create_api_key",
     "user:profile",
     "user:inference",
     "user:sessions:claude_code",
@@ -219,6 +220,7 @@ class ClaudeAuth:
                     "grant_type": "refresh_token",
                     "refresh_token": refresh_token,
                     "client_id": CLIENT_ID,
+                    "scope": " ".join(SCOPES),
                 },
                 headers={"Content-Type": "application/json"},
                 timeout=15,
@@ -258,6 +260,7 @@ class ClaudeAuth:
         verifier = self._generate_code_verifier()
         self._pending_auth[state] = verifier
         params = {
+            "code": "true",
             "response_type": "code",
             "client_id": CLIENT_ID,
             "redirect_uri": REDIRECT_URI,

@@ -139,7 +139,7 @@
             <span id="claude-label">Claude: ...</span>
         </span>
         <button class="btn btn-sm" id="claude-refresh-btn" style="display:none" onclick="forceRefresh()">Refresh</button>
-        <button class="btn btn-sm" id="claude-reauth-btn" style="display:none;border-color:var(--red);color:var(--red)" onclick="startReauth()">Re-auth</button>
+        <button class="btn btn-sm" id="claude-reauth-btn" style="border-color:var(--blue);color:var(--blue)" onclick="startReauth()">Login</button>
     </div>
 </div>
 
@@ -1000,13 +1000,13 @@ function showReauthModal(url,state) {
     var ex=document.getElementById('reauth-modal'); if(ex) ex.remove();
     var m=ce('div'); m.id='reauth-modal'; m.className='modal-overlay';
     var c=ce('div'); c.className='modal-content';
-    var h=ce('h3'); txt(h,'Claude Re-authorization'); c.appendChild(h);
-    var p1=ce('p'); txt(p1,'1. Open this URL and authorize:'); c.appendChild(p1);
-    var a=ce('a'); a.href=url; a.target='_blank'; a.style.cssText='color:var(--blue);word-break:break-all;font-size:12px'; txt(a,url); c.appendChild(a);
-    var p2=ce('p'); txt(p2,'2. After authorization, copy the "code" parameter from the redirect URL and paste below:'); c.appendChild(p2);
-    var inp=ce('input'); inp.type='text'; inp.id='reauth-code'; inp.placeholder='Paste authorization code...'; c.appendChild(inp);
+    var h=ce('h3'); txt(h,'Claude OAuth Login'); c.appendChild(h);
+    var p1=ce('p'); txt(p1,'Step 1: Click the button below to authorize on claude.ai'); c.appendChild(p1);
+    var ab=ce('a'); ab.href=url; ab.target='_blank'; ab.className='btn btn-go'; ab.style.cssText='display:inline-block;text-align:center;margin:8px 0;text-decoration:none'; txt(ab,'Open Claude Authorization'); c.appendChild(ab);
+    var p2=ce('p'); txt(p2,'Step 2: After login, you will be redirected to a page showing an authorization code. Copy it and paste below:'); c.appendChild(p2);
+    var inp=ce('input'); inp.type='text'; inp.id='reauth-code'; inp.placeholder='Paste authorization code here...'; c.appendChild(inp);
     var btns=ce('div'); btns.className='modal-actions';
-    var sb=ce('button'); sb.className='btn btn-go'; txt(sb,'Submit'); sb.addEventListener('click',function(){submitReauth(state);}); btns.appendChild(sb);
+    var sb=ce('button'); sb.className='btn btn-go'; txt(sb,'Submit Code'); sb.addEventListener('click',function(){submitReauth(state);}); btns.appendChild(sb);
     var cb=ce('button'); cb.className='btn'; txt(cb,'Cancel'); cb.addEventListener('click',closeReauthModal); btns.appendChild(cb);
     c.appendChild(btns); m.appendChild(c); document.body.appendChild(m);
 }
