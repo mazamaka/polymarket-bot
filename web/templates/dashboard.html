@@ -131,15 +131,18 @@
         <button class="btn btn-go" onclick="runPaper()" id="btn-paper">Run Trading</button>
         <button class="btn" onclick="runAnalysis()" id="btn-analysis">Analysis</button>
         <button class="btn" onclick="toggleScheduler()" id="btn-sched">Start Auto</button>
+        <span style="width:1px;height:20px;background:var(--border);margin:0 2px"></span>
         <a class="btn" href="/scans">Scans</a>
         <a class="btn" href="/signals">Signals</a>
         <button class="btn" onclick="toggleSettings()" id="btn-settings">Settings</button>
+        <span style="width:1px;height:20px;background:var(--border);margin:0 2px"></span>
         <span class="claude-indicator" id="claude-indicator" title="Checking Claude..." onclick="checkClaudeStatus()">
             <span class="claude-dot" id="claude-dot"></span>
             <span id="claude-label">Claude: ...</span>
+            <span id="claude-ttl" style="color:var(--dim);font-size:10px"></span>
         </span>
         <button class="btn btn-sm" id="claude-refresh-btn" style="display:none" onclick="forceRefresh()">Refresh</button>
-        <button class="btn btn-sm" id="claude-reauth-btn" style="border-color:var(--blue);color:var(--blue)" onclick="startReauth()">Login</button>
+        <button class="btn btn-sm" id="claude-reauth-btn" style="border-color:var(--border);color:var(--dim)" onclick="startReauth()">Login</button>
     </div>
 </div>
 
@@ -973,20 +976,25 @@ function renderAnalytics(d) {
 }
 
 // ============ CLAUDE STATUS ============
-function formatTTL(sec) { return sec > 3600 ? Math.floor(sec/3600)+'h' : Math.floor(sec/60)+'m'; }
+function formatTTL(sec) {
+    if(sec<=0) return 'expired';
+    var h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60);
+    return h>0 ? h+'h '+m+'m' : m+'m';
+}
 function checkClaudeStatus() {
-    var ind = el('claude-indicator');
-    var label = el('claude-label');
+    var ind = el('claude-indicator'), label = el('claude-label'), ttlEl = el('claude-ttl');
     ind.className = 'claude-indicator checking';
     fetch('/api/claude-auth/status').then(function(r) { return r.json(); }).then(function(d) {
         ind.className = 'claude-indicator ' + d.status;
         ind.title = d.message + (d.expires_at ? '\nExpires: ' + d.expires_at : '');
-        var labels = {active:'Claude: OK', expiring_soon:'Claude: '+formatTTL(d.ttl_seconds), expired:'Claude: expired', refresh_failed:'Claude: refresh failed', needs_reauth:'Claude: re-auth!', missing:'Claude: missing'};
-        label.textContent = labels[d.status] || 'Claude: '+d.status;
+        var statusLabels = {active:'OK', expiring_soon:'Expiring', expired:'Expired', refresh_failed:'Refresh failed', needs_reauth:'Re-auth!', missing:'Missing'};
+        label.textContent = 'Claude: ' + (statusLabels[d.status] || d.status);
+        ttlEl.textContent = d.ttl_seconds > 0 ? '· ' + formatTTL(d.ttl_seconds) : '';
+        ttlEl.style.color = d.ttl_seconds > 3600 ? 'var(--dim)' : d.ttl_seconds > 1800 ? 'var(--yellow)' : 'var(--red)';
         var rb = document.getElementById('claude-refresh-btn'), ab = document.getElementById('claude-reauth-btn');
-        if(rb) rb.style.display = ['expired','expiring_soon','refresh_failed'].indexOf(d.status)>=0?'inline-block':'none';
-        if(ab) ab.style.display = 'inline-block';
-    }).catch(function() { ind.className='claude-indicator error'; label.textContent='Claude: error'; });
+        if(rb) rb.style.display = ['expired','expiring_soon','refresh_failed'].indexOf(d.status)>=0 ? 'inline-block' : 'none';
+        if(ab) { ab.style.display = 'inline-block'; var urgent = ['expired','missing','needs_reauth','refresh_failed'].indexOf(d.status)>=0; ab.style.borderColor = urgent ? 'var(--red)' : 'var(--border)'; ab.style.color = urgent ? 'var(--red)' : 'var(--dim)'; }
+    }).catch(function() { ind.className='claude-indicator error'; label.textContent='Claude: error'; ttlEl.textContent=''; });
 }
 function forceRefresh() {
     fetch('/api/claude-auth/refresh',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
