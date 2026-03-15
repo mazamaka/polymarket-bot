@@ -996,16 +996,30 @@ function forceRefresh() {
 function startReauth() {
     fetch('/api/claude-auth/start').then(function(r){return r.json()}).then(function(d){
         window.open(d.auth_url, '_blank');
+        showCodeModal(d.state);
     });
+}
+function showCodeModal(state) {
+    var ex=document.getElementById('reauth-modal'); if(ex) ex.remove();
+    var m=ce('div'); m.id='reauth-modal'; m.className='modal-overlay';
+    var c=ce('div'); c.className='modal-content';
+    var h=ce('h3'); txt(h,'Paste Authorization Code'); c.appendChild(h);
+    var p1=ce('p'); txt(p1,'After logging in, copy the code shown on the redirect page and paste it below:'); c.appendChild(p1);
+    var inp=ce('input'); inp.type='text'; inp.id='reauth-code'; inp.placeholder='Paste code here...'; c.appendChild(inp);
+    var btns=ce('div'); btns.className='modal-actions';
+    var sb=ce('button'); sb.className='btn btn-go'; txt(sb,'Submit'); sb.addEventListener('click',function(){
+        var code=document.getElementById('reauth-code').value.trim(); if(!code) return;
+        fetch('/api/claude-auth/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,state:state})}).then(function(r){return r.json()}).then(function(d){
+            document.getElementById('reauth-modal').remove();
+            if(d.ok){ addLog('Claude: authorized!','info'); checkClaudeStatus(); } else alert('Failed: '+d.error);
+        });
+    }); btns.appendChild(sb);
+    var cb=ce('button'); cb.className='btn'; txt(cb,'Cancel'); cb.addEventListener('click',function(){ document.getElementById('reauth-modal').remove(); }); btns.appendChild(cb);
+    c.appendChild(btns); m.appendChild(c); document.body.appendChild(m);
+    inp.focus();
 }
 checkClaudeStatus();
 setInterval(checkClaudeStatus, 300000);
-// Check if we returned from OAuth callback
-(function(){
-    var p = new URLSearchParams(window.location.search);
-    if(p.get('auth')==='ok') { addLog('Claude OAuth: authorized!','info'); checkClaudeStatus(); history.replaceState(null,'','/'); }
-    if(p.get('auth')==='failed') { addLog('Claude OAuth: failed','error'); history.replaceState(null,'','/'); }
-})();
 
 // ============ INIT ============
 renderPositions(initialData.positions || []);
