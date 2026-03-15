@@ -24,6 +24,7 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
 TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"
+DEFAULT_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"
 SCOPES = [
     "org:create_api_key",
     "user:profile",
@@ -88,12 +89,34 @@ def _parse_token_pair(tokens: dict[str, Any]) -> tuple[str | None, str | None]:
 class ClaudeAuth:
     """Управление OAuth токенами Claude."""
 
-    def __init__(self, credentials_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        credentials_path: Path | None = None,
+        redirect_uri: str | None = None,
+    ) -> None:
         self._creds_path: Path = credentials_path or (
             Path.home() / ".claude" / ".credentials.json"
         )
+        self._redirect_uri = redirect_uri or DEFAULT_REDIRECT_URI
         self._last_refresh: datetime | None = None
-        self._pending_auth: dict[str, str] = {}
+        self._pending_file = self._creds_path.parent / ".pending_auth.json"
+        self._pending_auth: dict[str, str] = self._load_pending()
+
+    def _load_pending(self) -> dict[str, str]:
+        """Загрузить pending auth из файла (переживает рестарт контейнера)."""
+        try:
+            if self._pending_file.exists():
+                return json.loads(self._pending_file.read_text("utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+        return {}
+
+    def _save_pending(self) -> None:
+        """Сохранить pending auth в файл."""
+        try:
+            self._pending_file.write_text(json.dumps(self._pending_auth), "utf-8")
+        except OSError as exc:
+            logger.warning("Failed to save pending auth: %s", exc)
 
     def _read_credentials(self) -> dict[str, Any] | None:
         """Прочитать credentials JSON. Возвращает None если файл отсутствует."""
@@ -259,11 +282,12 @@ class ClaudeAuth:
         state = secrets.token_urlsafe(24)
         verifier = self._generate_code_verifier()
         self._pending_auth[state] = verifier
+        self._save_pending()
         params = {
             "code": "true",
             "response_type": "code",
             "client_id": CLIENT_ID,
-            "redirect_uri": REDIRECT_URI,
+            "redirect_uri": self._redirect_uri,
             "scope": " ".join(SCOPES),
             "state": state,
             "code_challenge": self._generate_code_challenge(verifier),
@@ -274,6 +298,7 @@ class ClaudeAuth:
     def complete_auth_flow(self, code: str, state: str) -> bool:
         """Обменять authorization code на токены. Возвращает True при успехе."""
         code_verifier = self._pending_auth.pop(state, None)
+        self._save_pending()
         if code_verifier is None:
             logger.warning("Unknown or expired state: %s", state)
             return False
@@ -284,7 +309,7 @@ class ClaudeAuth:
                     "grant_type": "authorization_code",
                     "code": code,
                     "client_id": CLIENT_ID,
-                    "redirect_uri": REDIRECT_URI,
+                    "redirect_uri": self._redirect_uri,
                     "code_verifier": code_verifier,
                 },
                 headers={"Content-Type": "application/json"},
@@ -332,51 +357,66 @@ class ClaudeAuth:
 
 
 # ---- FastAPI Router ----
-claude_auth_router = APIRouter(prefix="/api/claude-auth", tags=["claude-auth"])
-_auth = ClaudeAuth()
+
+_CALLBACK_PATH = "/api/claude-auth/callback"
 
 
-@claude_auth_router.get("/status", response_model=ClaudeAuthStatus)
-async def get_claude_auth_status() -> ClaudeAuthStatus:
-    """Получить текущий статус OAuth токена."""
-    return _auth.get_status()
+def create_claude_auth_router(
+    public_url: str | None = None,
+) -> tuple[APIRouter, "ClaudeAuth"]:
+    """Создать роутер и экземпляр ClaudeAuth.
+
+    Args:
+        public_url: Публичный URL сервиса (например https://poly.maxbob.xyz).
+                    Если задан — redirect_uri указывает на наш callback.
+    """
+    redirect_uri = (
+        f"{public_url}{_CALLBACK_PATH}" if public_url else DEFAULT_REDIRECT_URI
+    )
+    auth = ClaudeAuth(redirect_uri=redirect_uri)
+    router = APIRouter(prefix="/api/claude-auth", tags=["claude-auth"])
+
+    @router.get("/status", response_model=ClaudeAuthStatus)
+    async def get_claude_auth_status() -> ClaudeAuthStatus:
+        return auth.get_status()
+
+    @router.post("/refresh")
+    async def force_refresh() -> dict[str, Any]:
+        data = auth._read_credentials()
+        if data is None:
+            return {"ok": False, "error": "Credentials file not found"}
+        oauth = data.get(_OAUTH_KEY)
+        if not oauth:
+            return {"ok": False, "error": "No OAuth data in credentials"}
+        refresh_token = oauth.get("refreshToken")
+        if not refresh_token:
+            return {"ok": False, "error": "No refresh token available"}
+        if auth._refresh_token(refresh_token):
+            return {"ok": True, "status": auth.get_status().model_dump()}
+        return {"ok": False, "error": "Refresh token expired or invalid"}
+
+    @router.get("/start")
+    async def start_auth() -> dict[str, str]:
+        auth_url, state = auth.start_auth_flow()
+        return {"auth_url": auth_url, "state": state}
+
+    @router.post("/complete")
+    async def complete_auth(request: AuthCompleteRequest) -> dict[str, Any]:
+        if auth.complete_auth_flow(request.code, request.state):
+            return {"ok": True, "status": auth.get_status().model_dump()}
+        return {"ok": False, "error": "Invalid state or code exchange failed"}
+
+    @router.get("/callback")
+    async def oauth_callback(code: str, state: str) -> RedirectResponse:
+        """OAuth callback — Claude редиректит сюда с code и state."""
+        if auth.complete_auth_flow(code, state):
+            return RedirectResponse(url="/?auth=ok")
+        return RedirectResponse(url="/?auth=failed")
+
+    return router, auth
 
 
-@claude_auth_router.post("/refresh")
-async def force_refresh() -> dict[str, Any]:
-    """Принудительный refresh токена."""
-    data = _auth._read_credentials()
-    if data is None:
-        return {"ok": False, "error": "Credentials file not found"}
-    oauth = data.get(_OAUTH_KEY)
-    if not oauth:
-        return {"ok": False, "error": "No OAuth data in credentials"}
-    refresh_token = oauth.get("refreshToken")
-    if not refresh_token:
-        return {"ok": False, "error": "No refresh token available"}
-    if _auth._refresh_token(refresh_token):
-        return {"ok": True, "status": _auth.get_status().model_dump()}
-    return {"ok": False, "error": "Refresh token expired or invalid"}
-
-
-@claude_auth_router.get("/start")
-async def start_auth() -> dict[str, str]:
-    """Начать OAuth flow - вернуть URL для авторизации."""
-    auth_url, state = _auth.start_auth_flow()
-    return {
-        "auth_url": auth_url,
-        "state": state,
-        "instructions": (
-            "1. Open the URL and authorize. "
-            "2. Copy the 'code' parameter from the redirect URL. "
-            "3. Submit it via POST /api/claude-auth/complete."
-        ),
-    }
-
-
-@claude_auth_router.post("/complete")
-async def complete_auth(request: AuthCompleteRequest) -> dict[str, Any]:
-    """Завершить OAuth flow - обменять code на токены."""
-    if _auth.complete_auth_flow(request.code, request.state):
-        return {"ok": True, "status": _auth.get_status().model_dump()}
-    return {"ok": False, "error": "Invalid state or code exchange failed"}
+# Обратная совместимость: если не нужен custom redirect
+claude_auth_router, _auth = create_claude_auth_router(
+    public_url=os.environ.get("PUBLIC_URL"),
+)
