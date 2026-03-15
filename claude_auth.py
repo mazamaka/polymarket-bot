@@ -58,6 +58,7 @@ class ClaudeAuthStatus(BaseModel):
     ttl_seconds: int
     subscription_type: str
     last_refresh: str | None
+    has_refresh_token: bool
     message: str
 
 
@@ -154,6 +155,7 @@ class ClaudeAuth:
                 ttl_seconds=0,
                 subscription_type="unknown",
                 last_refresh=None,
+                has_refresh_token=False,
                 message="Credentials file not found",
             )
         oauth = data.get(_OAUTH_KEY)
@@ -164,6 +166,7 @@ class ClaudeAuth:
                 ttl_seconds=0,
                 subscription_type="unknown",
                 last_refresh=None,
+                has_refresh_token=False,
                 message="No OAuth tokens in credentials",
             )
         sub_type: str = oauth.get("subscriptionType", "unknown")
@@ -183,6 +186,7 @@ class ClaudeAuth:
             ttl_seconds=max(ttl, 0),
             subscription_type=sub_type,
             last_refresh=last_ref,
+            has_refresh_token=bool(oauth.get("refreshToken")),
             message=message,
         )
 

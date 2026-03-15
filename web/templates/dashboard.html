@@ -989,8 +989,10 @@ function checkClaudeStatus() {
         ind.title = d.message + (d.expires_at ? '\nExpires: ' + d.expires_at : '');
         var statusLabels = {active:'OK', expiring_soon:'Expiring', expired:'Expired', refresh_failed:'Refresh failed', needs_reauth:'Re-auth!', missing:'Missing'};
         label.textContent = 'Claude: ' + (statusLabels[d.status] || d.status);
-        ttlEl.textContent = d.ttl_seconds > 0 ? '· ' + formatTTL(d.ttl_seconds) : '';
-        ttlEl.style.color = d.ttl_seconds > 3600 ? 'var(--dim)' : d.ttl_seconds > 1800 ? 'var(--yellow)' : 'var(--red)';
+        if(d.ttl_seconds > 0) {
+            ttlEl.textContent = '· ' + formatTTL(d.ttl_seconds) + (d.has_refresh_token ? '' : ' (no auto-refresh!)');
+            ttlEl.style.color = d.has_refresh_token ? (d.ttl_seconds > 3600 ? 'var(--dim)' : d.ttl_seconds > 1800 ? 'var(--yellow)' : 'var(--red)') : 'var(--yellow)';
+        } else { ttlEl.textContent = ''; }
         var rb = document.getElementById('claude-refresh-btn'), ab = document.getElementById('claude-reauth-btn');
         if(rb) rb.style.display = ['expired','expiring_soon','refresh_failed'].indexOf(d.status)>=0 ? 'inline-block' : 'none';
         if(ab) { ab.style.display = 'inline-block'; var urgent = ['expired','missing','needs_reauth','refresh_failed'].indexOf(d.status)>=0; ab.style.borderColor = urgent ? 'var(--red)' : 'var(--border)'; ab.style.color = urgent ? 'var(--red)' : 'var(--dim)'; }
