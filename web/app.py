@@ -29,6 +29,8 @@ _POSITIONS_CACHE_TTL: int = 30  # seconds
 
 # --- SL/TP tracking: avoid duplicate sell orders ---
 _sl_tp_triggered: set[str] = set()
+_sl_tp_retries: dict[str, int] = {}  # token_id -> retry count
+_SL_MAX_RETRIES = 3
 
 
 class SellRequest(BaseModel):
@@ -777,7 +779,23 @@ def _live_monitor_check() -> None:
                     f"STOP-LOSS: {question} | PnL: {pnl_pct * 100:+.1f}% | Sell @ {sell_price}",
                 )
             except Exception as e:
-                logger.error("SL sell error for %s: %s", question, e)
+                _sl_tp_retries[token_id] = _sl_tp_retries.get(token_id, 0) + 1
+                if _sl_tp_retries[token_id] >= _SL_MAX_RETRIES:
+                    _sl_tp_triggered.add(token_id)
+                    logger.error(
+                        "SL GAVE UP after %d retries for %s: %s",
+                        _SL_MAX_RETRIES,
+                        question,
+                        e,
+                    )
+                else:
+                    logger.error(
+                        "SL sell error (%d/%d) for %s: %s",
+                        _sl_tp_retries[token_id],
+                        _SL_MAX_RETRIES,
+                        question,
+                        e,
+                    )
             continue
 
         # Take-profit
@@ -799,11 +817,31 @@ def _live_monitor_check() -> None:
                     f"TAKE-PROFIT: {question} | PnL: {pnl_pct * 100:+.1f}% | Sell @ {sell_price}",
                 )
             except Exception as e:
-                logger.error("TP sell error for %s: %s", question, e)
+                _sl_tp_retries[token_id] = _sl_tp_retries.get(token_id, 0) + 1
+                if _sl_tp_retries[token_id] >= _SL_MAX_RETRIES:
+                    _sl_tp_triggered.add(token_id)
+                    logger.error(
+                        "TP GAVE UP after %d retries for %s: %s",
+                        _SL_MAX_RETRIES,
+                        question,
+                        e,
+                    )
+                else:
+                    logger.error(
+                        "TP sell error (%d/%d) for %s: %s",
+                        _sl_tp_retries[token_id],
+                        _SL_MAX_RETRIES,
+                        question,
+                        e,
+                    )
 
     # Clean up: remove tokens no longer in positions
     current_tokens = {p.get("token_id", "") for p in positions}
     _sl_tp_triggered &= current_tokens
+    # Clean up retries for closed positions
+    for k in list(_sl_tp_retries):
+        if k not in current_tokens:
+            del _sl_tp_retries[k]
 
 
 async def _price_monitor_loop(interval_sec: int = 180) -> None:
