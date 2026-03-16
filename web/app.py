@@ -863,7 +863,7 @@ _trading_task: asyncio.Task | None = None
 
 @app.post("/api/scheduler/start")
 async def api_scheduler_start() -> JSONResponse:
-    global _monitor_task, _trading_task
+    global _monitor_task, _trading_task, _sse_task, _sse_listener
     already_running = []
     started = []
 
@@ -879,6 +879,20 @@ async def api_scheduler_start() -> JSONResponse:
         _trading_task = asyncio.create_task(_trading_loop(15))
         started.append("trading scanner (every 15 min)")
 
+    from config import settings as _s
+
+    if _s.sse_enabled and (_sse_task is None or _sse_task.done()):
+        from services.sse_listener import SSEListener
+
+        _sse_listener = SSEListener(
+            on_breaking_match=_on_breaking_match,
+            on_log=_broadcast_log,
+        )
+        _sse_task = asyncio.create_task(_sse_listener.start())
+        started.append("SSE listener")
+    elif _sse_task and not _sse_task.done():
+        already_running.append("sse")
+
     msg = f"Started: {', '.join(started)}" if started else "Already running"
     sync_broadcast("log", msg)
     return JSONResponse(
@@ -888,7 +902,7 @@ async def api_scheduler_start() -> JSONResponse:
 
 @app.post("/api/scheduler/stop")
 async def api_scheduler_stop() -> JSONResponse:
-    global _monitor_task, _trading_task
+    global _monitor_task, _trading_task, _sse_task, _sse_listener
     stopped = []
 
     if _monitor_task and not _monitor_task.done():
@@ -901,6 +915,13 @@ async def api_scheduler_stop() -> JSONResponse:
         _trading_task = None
         stopped.append("trading scanner")
 
+    if _sse_listener and _sse_task and not _sse_task.done():
+        await _sse_listener.stop()
+        _sse_task.cancel()
+        _sse_task = None
+        _sse_listener = None
+        stopped.append("SSE listener")
+
     if stopped:
         msg = f"Stopped: {', '.join(stopped)}"
         sync_broadcast("log", msg)
@@ -912,11 +933,13 @@ async def api_scheduler_stop() -> JSONResponse:
 async def api_scheduler_status() -> JSONResponse:
     monitor_running = _monitor_task is not None and not _monitor_task.done()
     trading_running = _trading_task is not None and not _trading_task.done()
+    sse_running = _sse_task is not None and not _sse_task.done()
     return JSONResponse(
         {
-            "running": monitor_running or trading_running,
+            "running": monitor_running or trading_running or sse_running,
             "monitor": monitor_running,
             "trading": trading_running,
+            "sse_listener": sse_running,
         }
     )
 
