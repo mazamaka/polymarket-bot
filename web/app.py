@@ -246,7 +246,13 @@ RESULTS_DIR = Path("results")
 class APIKeyMiddleware(BaseHTTPMiddleware):
     """API key auth via cookie, query param, or Authorization header."""
 
-    EXEMPT_PATHS = {"/api/portfolio", "/docs", "/openapi.json"}
+    EXEMPT_PATHS = {
+        "/api/portfolio",
+        "/api/sse/status",
+        "/api/scheduler/status",
+        "/docs",
+        "/openapi.json",
+    }
 
     async def dispatch(self, request: Request, call_next):
         from config import settings as _s
