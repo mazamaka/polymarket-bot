@@ -15,16 +15,12 @@ class Settings(BaseSettings):
     max_total_exposure_pct: float = (
         0.60  # 60% общая экспозиция (увеличена: weather + AI раздельные бюджеты)
     )
-    min_edge_threshold: float = (
-        0.08  # 8% минимальный edge для AI (было 5% — слишком много skip)
-    )
+    min_edge_threshold: float = 0.08  # 8% минимальный edge для AI (было 5% — слишком много skip)
     max_edge_threshold: float = 0.40  # 40% макс edge (больше = AI ошибается)
     stop_loss_pct: float = 0.30  # -30% stop-loss
     take_profit_pct: float = 0.20  # +20% take-profit
     max_concurrent_positions: int = 35  # Общий лимит (AI + weather)
-    min_confidence: float = (
-        0.40  # 40% мин. уверенность Claude (было 30% — пускал мусор)
-    )
+    min_confidence: float = 0.40  # 40% мин. уверенность Claude (было 30% — пускал мусор)
     min_liquidity_usd: float = 300.0  # мин. ликвидность (снижена для охвата)
     ai_min_confidence: float = 0.50  # AI-specific: минимум 50% confidence
     ai_max_positions: int = 10  # AI-specific: макс позиций
@@ -32,9 +28,7 @@ class Settings(BaseSettings):
     ai_max_hours_to_resolution: float = 168.0  # AI: макс 7 дней до закрытия
 
     # Timing
-    max_hours_to_resolution: float = (
-        168.0  # 7 дней макс. — быстрый оборот для статистики
-    )
+    max_hours_to_resolution: float = 168.0  # 7 дней макс. — быстрый оборот для статистики
     min_hours_to_resolution: float = 0.0  # без ограничения снизу
 
     # Weather Analyzer
@@ -67,6 +61,18 @@ class Settings(BaseSettings):
 
     # News Intelligence Service
     news_service_url: str = "https://news.maxbob.xyz"
+
+    # SSE Listener (breaking news)
+    sse_enabled: bool = True
+    sse_min_importance: str = "high"
+    sse_reconnect_max_seconds: int = 30
+
+    # Breaking news trading
+    breaking_min_relevance: float = 0.4
+    breaking_reanalyze_model: str = "sonnet"
+    breaking_reanalyze_timeout: int = 60
+    breaking_max_trades_per_hour: int = 5
+    breaking_market_refresh_minutes: int = 5
 
     # Trading
     default_trade_size_usd: float = 20.0  # размер сделки (AI + live)

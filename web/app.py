@@ -9,6 +9,7 @@ from pathlib import Path
 
 import requests
 import uvicorn
+from claude_auth import claude_auth_router
 from fastapi import BackgroundTasks, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +18,6 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
-from claude_auth import claude_auth_router
 from trader.storage import PortfolioStorage
 
 logger = logging.getLogger(__name__)
@@ -317,15 +317,96 @@ async def broadcast(event: str, data: dict | str = "") -> None:
 _main_loop: asyncio.AbstractEventLoop | None = None
 
 
+_sse_task: asyncio.Task | None = None
+_sse_listener = None
+
+
+def _on_breaking_match(article: dict, matches: list) -> None:
+    """Callback when SSE listener finds breaking news matching a market."""
+    from analyzer.claude import ClaudeAnalyzer
+    from trader.risk import RiskManager
+    from trader.storage import PortfolioStorage as _Storage
+
+    analyzer = ClaudeAnalyzer()
+    risk_mgr = RiskManager()
+    storage = _Storage()
+
+    for market, relevance in matches[:3]:  # Analyze top 3 matches
+        sync_broadcast(
+            "log",
+            f"[BREAKING] Re-analyzing: {market.question[:60]} (relevance: {relevance:.2f})",
+        )
+
+        prediction = analyzer.rapid_reanalyze(market, article)
+        if not prediction:
+            continue
+
+        if prediction.recommended_side == "SKIP":
+            sync_broadcast(
+                "log", f"[BREAKING] SKIP: edge {prediction.edge:+.0%} too small"
+            )
+            continue
+
+        signal = risk_mgr.evaluate_signal(prediction, storage.balance)
+        if signal:
+            from polymarket.models import Position
+
+            position = Position(
+                market_id=market.id,
+                token_id=market.clob_token_ids[0] if market.clob_token_ids else "",
+                question=market.question,
+                entry_price=signal.price,
+                size_usd=signal.size_usd,
+                current_price=signal.price,
+                side="BUY",
+                end_date=market.end_date,
+                slug=market.slug,
+                edge=prediction.edge,
+                confidence=prediction.confidence,
+                ai_probability=prediction.ai_probability,
+                reasoning=prediction.reasoning,
+                volume=market.volume,
+                liquidity=market.liquidity,
+            )
+            new_balance = storage.balance - signal.size_usd
+            storage.add_position(position, new_balance)
+            sync_broadcast("portfolio", storage.get_summary())
+            sync_broadcast(
+                "log",
+                f"[BREAKING] OPEN: {signal.prediction.recommended_side} "
+                f"{market.question[:50]} @ {signal.price:.4f} (${signal.size_usd})",
+            )
+        else:
+            sync_broadcast(
+                "log", f"[BREAKING] Risk check failed for {market.question[:50]}"
+            )
+
+    analyzer.close()
+
+
 @app.on_event("startup")
 async def _capture_loop() -> None:
-    global _main_loop, _monitor_task, _trading_task
+    global _main_loop, _monitor_task, _trading_task, _sse_task, _sse_listener
     _main_loop = asyncio.get_running_loop()
     # Auto-start scheduler for autonomous operation
     _monitor_task = asyncio.create_task(_price_monitor_loop(180))
     _trading_task = asyncio.create_task(_trading_loop(15))
+
+    # Start SSE listener for breaking news
+    from config import settings
+
+    if settings.sse_enabled:
+        from services.sse_listener import SSEListener
+
+        _sse_listener = SSEListener(
+            on_breaking_match=_on_breaking_match,
+            on_log=_broadcast_log,
+        )
+        _sse_task = asyncio.create_task(_sse_listener.start())
+        logger.info("SSE listener started for breaking news")
+
     logger.info(
-        "Auto-scheduler started: price monitor (3 min) + trading scanner (15 min)"
+        "Auto-scheduler started: price monitor (3 min) + trading scanner (15 min) + SSE listener"
     )
 
 
@@ -942,6 +1023,13 @@ async def api_cancel_order(req: CancelOrderRequest) -> JSONResponse:
 async def api_live_positions() -> JSONResponse:
     """Получить реальные позиции из Data API (для дебага)."""
     return JSONResponse(_fetch_live_positions())
+
+
+@app.get("/api/sse/status")
+async def api_sse_status() -> JSONResponse:
+    if _sse_listener is None:
+        return JSONResponse({"enabled": False})
+    return JSONResponse({"enabled": True, **_sse_listener.status})
 
 
 def _load_latest_analyses(max_files: int = 3) -> list[dict]:

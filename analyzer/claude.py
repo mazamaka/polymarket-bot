@@ -14,12 +14,6 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-from analyzer.prompts import (
-    ANALYZE_MARKET_USER,
-    BATCH_SCREEN_SYSTEM,
-    BATCH_SCREEN_USER,
-    SUPERFORECASTER_SYSTEM,
-)
 from claude_auth import ClaudeAuth  # noqa: E402
 from config import settings
 from polymarket.models import AIPrediction, Market
@@ -28,6 +22,13 @@ from utils.search import (
     fetch_news_service_context,
     format_economic_events,
     search_market_context,
+)
+
+from analyzer.prompts import (
+    ANALYZE_MARKET_USER,
+    BATCH_SCREEN_SYSTEM,
+    BATCH_SCREEN_USER,
+    SUPERFORECASTER_SYSTEM,
 )
 
 logger = logging.getLogger(__name__)
@@ -131,11 +132,7 @@ class ClaudeAnalyzer:
     def analyze_market(self, market: Market) -> AIPrediction | None:
         """Глубокий анализ одного рынка."""
         yes_price = market.outcome_prices[0] if market.outcome_prices else 0.5
-        no_price = (
-            market.outcome_prices[1]
-            if len(market.outcome_prices) > 1
-            else 1 - yes_price
-        )
+        no_price = market.outcome_prices[1] if len(market.outcome_prices) > 1 else 1 - yes_price
 
         price_context = self.prices.enrich_market_context(market.question)
         news_context = search_market_context(market.question, max_results=5)
@@ -245,9 +242,7 @@ class ClaudeAnalyzer:
                     logger.error("Ошибка анализа %s: %s", market.question[:40], e)
         return predictions
 
-    def batch_screen_markets(
-        self, markets: list[Market], batch_size: int = 15
-    ) -> list[dict]:
+    def batch_screen_markets(self, markets: list[Market], batch_size: int = 15) -> list[dict]:
         """Быстрый скрининг рынков батчами."""
         interesting: list[dict] = []
 
@@ -277,9 +272,7 @@ class ClaudeAnalyzer:
             full_prompt = BATCH_SCREEN_SYSTEM + "\n\n" + user_prompt
 
             try:
-                content = _call_claude(
-                    full_prompt, model=self.screen_model, timeout=180
-                )
+                content = _call_claude(full_prompt, model=self.screen_model, timeout=180)
                 if not content:
                     continue
                 parsed = self._parse_json_response(content)
@@ -314,6 +307,96 @@ class ClaudeAnalyzer:
                 line += f" | {price_ctx.strip()}"
             lines.append(line)
         return "\n".join(lines)
+
+    def rapid_reanalyze(
+        self,
+        market: Market,
+        breaking_article: dict,
+    ) -> AIPrediction | None:
+        """Fast re-analysis of a market triggered by breaking news.
+
+        Uses Sonnet (not Opus) for speed: 10-30s vs 60-120s.
+        Focused prompt: "how does this news affect this market?"
+        """
+        yes_price = market.outcome_prices[0] if market.outcome_prices else 0.5
+
+        article_text = (
+            f"**BREAKING NEWS:**\n"
+            f"Source: {breaking_article.get('source', '')}\n"
+            f"Title: {breaking_article.get('title', '')}\n"
+            f"Summary: {breaking_article.get('summary', '')}\n"
+            f"Published: {breaking_article.get('published_at', '')}"
+        )
+
+        prompt = (
+            "You are a prediction market analyst. A breaking news article just dropped.\n"
+            "Evaluate how this news affects the probability of the market question.\n\n"
+            f"MARKET: {market.question}\n"
+            f"Description: {market.description[:1000]}\n"
+            f"Current YES price: {yes_price:.2f} ({yes_price * 100:.0f}%)\n"
+            f"End date: {market.end_date}\n\n"
+            f"{article_text}\n\n"
+            "Respond with JSON only:\n"
+            "```json\n"
+            '{"probability": 0.XX, "confidence": 0.XX, '
+            '"impact": "positive|negative|neutral", '
+            '"reasoning": "1-2 sentences"}\n'
+            "```"
+        )
+
+        try:
+            content = _call_claude(
+                prompt,
+                model=settings.breaking_reanalyze_model,
+                timeout=settings.breaking_reanalyze_timeout,
+            )
+            if not content:
+                return None
+
+            parsed = self._parse_json_response(content)
+            if not parsed or not isinstance(parsed, dict):
+                return None
+
+            ai_prob = max(0.0, min(1.0, float(parsed.get("probability", 0.5))))
+            confidence = max(0.0, min(1.0, float(parsed.get("confidence", 0.3))))
+            edge = ai_prob - yes_price
+            impact = parsed.get("impact", "neutral")
+            reasoning = f"[BREAKING/{impact}] {parsed.get('reasoning', '')}"
+
+            if abs(edge) < settings.min_edge_threshold:
+                recommended_side = "SKIP"
+            elif edge > 0:
+                recommended_side = "BUY_YES"
+            else:
+                recommended_side = "BUY_NO"
+
+            prediction = AIPrediction(
+                market_id=market.id,
+                question=market.question,
+                ai_probability=ai_prob,
+                market_probability=yes_price,
+                confidence=confidence,
+                edge=edge,
+                reasoning=reasoning,
+                recommended_side=recommended_side,
+                end_date=market.end_date,
+            )
+
+            logger.info(
+                "[BREAKING] %s | AI: %.0f%% vs Market: %.0f%% | Edge: %+.0f%% | %s | %s",
+                market.question[:50],
+                ai_prob * 100,
+                yes_price * 100,
+                edge * 100,
+                recommended_side,
+                impact,
+            )
+
+            return prediction
+
+        except Exception as e:
+            logger.error("[BREAKING] rapid_reanalyze error for %s: %s", market.question[:40], e)
+            return None
 
     def _parse_json_response(self, text: str) -> dict | list | None:
         """Извлечь JSON из ответа Claude."""
