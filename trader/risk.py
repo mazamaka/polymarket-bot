@@ -11,8 +11,15 @@ logger = logging.getLogger(__name__)
 class RiskManager:
     """Контролирует риски: размер позиций, общая экспозиция, stop-loss."""
 
-    def __init__(self, positions: list[Position] | None = None) -> None:
+    def __init__(
+        self,
+        positions: list[Position] | None = None,
+        live_exposure_usd: float = 0.0,
+        live_position_count: int = 0,
+    ) -> None:
         self.positions: list[Position] = positions or []
+        self._live_exposure_usd = live_exposure_usd
+        self._live_position_count = live_position_count
 
     def _count_ai_positions(self) -> int:
         """Подсчёт AI (не-weather) позиций."""
@@ -90,14 +97,14 @@ class RiskManager:
                 return None
 
         # Проверка max concurrent positions (общий)
-        if len(self.positions) >= settings.max_concurrent_positions:
-            logger.warning(
-                "SKIP: достигнут общий лимит позиций %d", len(self.positions)
-            )
+        total_positions = max(len(self.positions), self._live_position_count)
+        if total_positions >= settings.max_concurrent_positions:
+            logger.warning("SKIP: достигнут общий лимит позиций %d", total_positions)
             return None
 
-        # Проверка max total exposure
-        total_exposure = sum(p.size_usd for p in self.positions)
+        # Проверка max total exposure (use live data if available)
+        paper_exposure = sum(p.size_usd for p in self.positions)
+        total_exposure = max(paper_exposure, self._live_exposure_usd)
         max_exposure = balance_usd * settings.max_total_exposure_pct
         if total_exposure >= max_exposure:
             logger.warning(

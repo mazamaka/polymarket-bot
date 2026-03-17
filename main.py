@@ -566,7 +566,6 @@ def run_live_trading(max_markets: int = 200) -> None:
     api = PolymarketAPI()
     analyzer = ClaudeAnalyzer()
     storage = PortfolioStorage()
-    risk_mgr = RiskManager(positions=storage.positions)
 
     try:
         executor = get_live_executor()
@@ -594,6 +593,8 @@ def run_live_trading(max_markets: int = 200) -> None:
         # Собираем оба + token_id для надёжного dedup
         open_condition_ids: set[str] = set()
         open_token_ids: set[str] = set()
+        live_exposure_usd: float = 0.0
+        live_position_count: int = 0
         try:
             real_positions = executor.get_live_positions()
             open_condition_ids = {
@@ -602,14 +603,23 @@ def run_live_trading(max_markets: int = 200) -> None:
             open_token_ids = {
                 p["token_id"] for p in real_positions if p.get("token_id")
             }
+            live_exposure_usd = sum(p.get("initial_value", 0) for p in real_positions)
+            live_position_count = len(real_positions)
             logger.info(
-                "Live dedup: %d conditionIds, %d tokenIds from Data API",
+                "Live dedup: %d conditionIds, %d tokenIds, exposure=$%.2f",
                 len(open_condition_ids),
                 len(open_token_ids),
+                live_exposure_usd,
             )
         except Exception as e:
             logger.warning("Failed to get live positions for dedup, using paper: %s", e)
             open_condition_ids = storage.get_open_market_ids()
+
+        risk_mgr = RiskManager(
+            positions=storage.positions,
+            live_exposure_usd=live_exposure_usd,
+            live_position_count=live_position_count,
+        )
         # Filter by both Gamma id and conditionId
         to_screen = [
             m
@@ -694,6 +704,13 @@ def run_live_trading(max_markets: int = 200) -> None:
                 except Exception:
                     pass
 
+                # Count existing weather positions from live data
+                existing_weather = sum(
+                    1
+                    for p in real_positions
+                    if "temperature" in p.get("question", "").lower()
+                )
+
                 for wd in weather_predictions:
                     wp = wd.prediction
                     # Dedup by both Gamma id and conditionId
@@ -706,8 +723,11 @@ def run_live_trading(max_markets: int = 200) -> None:
                         direction, settings.weather_min_edge
                     )
 
-                    # Проверки
-                    if weather_opened >= settings.weather_max_positions:
+                    # Проверки (existing + newly opened this scan)
+                    if (
+                        existing_weather + weather_opened
+                        >= settings.weather_max_positions
+                    ):
                         break
                     if wp.market_probability > max_yes:
                         continue

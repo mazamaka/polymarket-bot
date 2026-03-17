@@ -1350,9 +1350,11 @@ def _redeem_bg() -> None:
     _positions_cache_ts = 0.0
     positions = _fetch_live_positions()
 
-    redeemable = [p for p in positions if p.get("redeemable")]
+    redeemable = [
+        p for p in positions if p.get("redeemable") and p.get("current_value", 0) > 0
+    ]
     if not redeemable:
-        sync_broadcast("log", "No redeemable positions found")
+        sync_broadcast("log", "No redeemable positions found (or all worthless)")
         return
 
     sync_broadcast("log", f"Redeeming {len(redeemable)} resolved position(s)...")

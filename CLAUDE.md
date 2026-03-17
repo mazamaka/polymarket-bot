@@ -124,7 +124,8 @@ SSEListener(on_breaking_match=callback, on_log=logger)
 | `max_concurrent_positions` | 35 | AI (10) + Weather (25) |
 | `min_confidence` | 40% | Мин. уверенность Claude |
 | `ai_min_confidence` | 50% | AI-specific minimum |
-| `default_trade_size_usd` | $20 | Размер сделки |
+| `default_trade_size_usd` | $20 | Размер сделки (AI) |
+| `weather_trade_size_usd` | $3 | Размер ставки (weather) |
 
 ## Weather Trading
 

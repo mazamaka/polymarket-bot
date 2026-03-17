@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     weather_min_edge: float = 0.08  # 8% мин. edge для погодных рынков (fallback)
     weather_max_days_ahead: int = 16  # макс. дней вперёд (лимит ensemble API)
     weather_min_liquidity: float = 100.0  # мин. ликвидность для погодных рынков
-    weather_trade_size_usd: float = 20.0  # размер ставки на погодный рынок ($20)
+    weather_trade_size_usd: float = 3.0  # размер ставки на погодный рынок ($3)
     weather_max_positions: int = (
         25  # макс. одновременных weather позиций (было 15 — упирались в лимит)
     )
