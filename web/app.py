@@ -138,9 +138,27 @@ def _live_portfolio(balance: float) -> dict:
     unrealized_pnl = sum(p["pnl"] for p in open_positions)
 
     # Resolved positions: realized PnL (won or lost)
-    realized_pnl = sum(p["pnl"] for p in resolved_positions)
+    resolved_pnl = sum(p["pnl"] for p in resolved_positions)
     resolved_claimable = sum(p["current_value"] for p in resolved_positions)
-    win_count = sum(1 for p in resolved_positions if p["pnl"] > 0)
+
+    # Trade history: realized PnL from SL/TP sells
+    from trader.live_history import get_live_history
+
+    trade_history = get_live_history().history
+    closes = [h for h in trade_history if h["action"] == "CLOSE"]
+    history_pnl = sum(h.get("pnl", 0) for h in closes)
+    history_wins = sum(1 for h in closes if h.get("pnl", 0) > 0)
+
+    # Combined realized PnL and stats
+    resolved_win_count = sum(1 for p in resolved_positions if p["pnl"] > 0)
+    total_closed = len(resolved_positions) + len(closes)
+    total_wins = resolved_win_count + history_wins
+    realized_pnl = resolved_pnl + history_pnl
+
+    # Total trades = current positions + fully closed (no longer in Data API)
+    open_token_ids = {p.get("token_id", "") for p in all_positions}
+    fully_closed = sum(1 for h in closes if h.get("token_id", "") not in open_token_ids)
+    total_trades = len(all_positions) + fully_closed
 
     # Total equity = free balance + open positions at market value + claimable from resolved
     total_equity = balance + invested + unrealized_pnl + resolved_claimable
@@ -162,12 +180,10 @@ def _live_portfolio(balance: float) -> dict:
         "total_equity": round(total_equity, 4),
         "roi_pct": round(roi_pct, 2),
         "open_positions": len(open_positions),
-        "total_trades": len(all_positions),
-        "closed_trades": len(resolved_positions),
-        "win_count": win_count,
-        "win_rate": round(win_count / len(resolved_positions) * 100, 1)
-        if resolved_positions
-        else 0,
+        "total_trades": total_trades,
+        "closed_trades": total_closed,
+        "win_count": total_wins,
+        "win_rate": round(total_wins / total_closed * 100, 1) if total_closed else 0,
         "unrealized_pnl": round(unrealized_pnl, 4),
         "realized_pnl": round(realized_pnl, 4),
         "avg_edge": 0,
@@ -771,7 +787,11 @@ def _record_live_trade(
         history = get_live_history()
         entry_price = pos.get("entry", 0.0)
         size_usd = pos.get("size", 0.0)
-        pnl = size_usd * pnl_pct
+        # PnL based on actual exit price, not current market pnl_pct
+        if entry_price > 0:
+            pnl = (sell_price - entry_price) / entry_price * size_usd
+        else:
+            pnl = 0.0
         history.record_close(
             question=pos.get("question", ""),
             side=pos.get("side", ""),
