@@ -499,7 +499,9 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 async def dashboard(request: Request) -> HTMLResponse:
     summary = _get_portfolio_summary()
     if summary.get("mode") == "live":
-        history = []
+        from trader.live_history import get_live_history
+
+        history = list(reversed(get_live_history().history))
     else:
         storage = PortfolioStorage()
         history = list(reversed(storage.history))
@@ -634,6 +636,12 @@ async def api_portfolio() -> JSONResponse:
 
 @app.get("/api/history")
 async def api_history() -> JSONResponse:
+    from config import settings as _s
+
+    if not _s.paper_trading:
+        from trader.live_history import get_live_history
+
+        return JSONResponse(list(reversed(get_live_history().history)))
     storage = PortfolioStorage()
     return JSONResponse(list(reversed(storage.history)))
 
@@ -753,6 +761,34 @@ def _run_analysis_bg() -> None:
         _set_status("idle", f"Error: {e}")
 
 
+def _record_live_trade(
+    pos: dict, sell_price: float, pnl_pct: float, reason: str
+) -> None:
+    """Record a live trade (SL/TP sell) to persistent history."""
+    try:
+        from trader.live_history import get_live_history
+
+        history = get_live_history()
+        entry_price = pos.get("entry", 0.0)
+        size_usd = pos.get("size", 0.0)
+        pnl = size_usd * pnl_pct
+        history.record_close(
+            question=pos.get("question", ""),
+            side=pos.get("side", ""),
+            entry_price=entry_price,
+            exit_price=sell_price,
+            size_usd=size_usd,
+            shares=pos.get("shares", 0.0),
+            pnl=pnl,
+            reason=reason,
+            token_id=pos.get("token_id", ""),
+            market_id=pos.get("market_id", ""),
+        )
+        sync_broadcast("history", list(reversed(history.history)))
+    except Exception as e:
+        logger.warning("Failed to record live trade: %s", e)
+
+
 def _cancel_all_open_orders(executor: "LiveExecutor") -> int:
     """Cancel ALL open orders to free locked balance before SL/TP sells."""
     cancelled = 0
@@ -868,6 +904,12 @@ def _live_monitor_check() -> None:
 
                 executor.execute_sell_order(token_id, sell_price, shares)
                 _sl_tp_triggered.add(token_id)
+                _record_live_trade(
+                    pos,
+                    sell_price,
+                    pnl_pct,
+                    "stop-loss",
+                )
                 sync_broadcast(
                     "log",
                     f"STOP-LOSS: {question} | PnL: {pnl_pct * 100:+.1f}% | Sell @ {sell_price}",
@@ -908,6 +950,12 @@ def _live_monitor_check() -> None:
 
                 executor.execute_sell_order(token_id, sell_price, shares)
                 _sl_tp_triggered.add(token_id)
+                _record_live_trade(
+                    pos,
+                    sell_price,
+                    pnl_pct,
+                    "take-profit",
+                )
                 sync_broadcast(
                     "log",
                     f"TAKE-PROFIT: {question} | PnL: {pnl_pct * 100:+.1f}% | Sell @ {sell_price}",
@@ -941,6 +989,14 @@ def _live_monitor_check() -> None:
             results = redeem_resolved_positions(redeemable)
             for r in results:
                 if r["success"]:
+                    from trader.live_history import get_live_history
+
+                    get_live_history().record_redeem(
+                        question=r["question"],
+                        pnl=0,
+                        tx_hash=r.get("tx_hash", ""),
+                        condition_id=r.get("condition_id", ""),
+                    )
                     sync_broadcast(
                         "log",
                         f"REDEEMED: {r['question'][:50]} | tx: {r['tx_hash'][:16]}...",
@@ -1152,6 +1208,10 @@ async def api_sell(req: SellRequest) -> JSONResponse:
         # Invalidate positions cache
         global _positions_cache_ts
         _positions_cache_ts = 0.0
+        # Record manual sell
+        pos = matching[0]
+        pnl_pct = pos.get("pnl_pct_raw", 0.0)
+        _record_live_trade(pos, req.price, pnl_pct, "manual")
         sync_broadcast(
             "log",
             f"SELL order placed: {req.size:.2f} shares @ {req.price:.4f}",

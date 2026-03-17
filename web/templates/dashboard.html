@@ -303,6 +303,7 @@
                 <option value="all">All</option>
                 <option value="OPEN">Opens</option>
                 <option value="CLOSE">Closes</option>
+                <option value="REDEEM">Redeems</option>
             </select>
             <span class="right" id="hist-count" style="font-size:11px;color:var(--dim);">{{ history|length }}</span>
         </div>
@@ -667,18 +668,27 @@ function renderHistory(history, totalCount) {
     history.forEach(h => {
         const tr = ce('tr');
         const isOpen = h.action === 'OPEN';
+        const isClose = h.action === 'CLOSE';
+        const isRedeem = h.action === 'REDEEM';
         const isYes = (h.side||'').includes('YES');
+
+        // Action badge
+        let actionLabel = h.action;
+        let actionClass = isOpen ? 'b-open' : 'b-close';
+        if (isRedeem) { actionLabel = 'REDEEM'; actionClass = 'b-close'; }
+        if (isClose && h.reason) { actionLabel = h.reason.toUpperCase(); }
 
         const cells = [
             makeTd((h.timestamp||'').slice(0,16), 'font-size:11px;color:var(--dim)'),
-            makeBadgeTd(h.action, isOpen ? 'b-open' : 'b-close'),
+            makeBadgeTd(actionLabel, actionClass),
             makeTd((h.question||'').slice(0,45), 'max-width:200px'),
             h.side ? makeBadgeTd(isYes?'YES':'NO', isYes?'b-yes':'b-no') : makeTd(''),
             makeTd(h.entry_price != null ? h.entry_price.toFixed(4) : ''),
-            makeTd(h.size_usd != null ? '$'+h.size_usd.toFixed(2) : ''),
+            makeTd(h.size_usd != null ? '$'+h.size_usd.toFixed(2) : (h.shares != null ? h.shares+' sh' : '')),
             makeTd(
                 (h.edge != null ? (h.edge>0?'+':'')+h.edge+'%' : '') +
-                (h.hold_hours != null ? (h.edge != null ? ' · ' : '') + h.hold_hours+'h' : ''),
+                (h.source ? (h.edge != null ? ' · ' : '') + h.source : '') +
+                (h.hold_hours != null ? (h.edge != null || h.source ? ' · ' : '') + h.hold_hours+'h' : ''),
                 'color:var(--dim)'),
         ];
 

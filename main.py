@@ -636,6 +636,21 @@ def run_live_trading(max_markets: int = 200) -> None:
                 storage.add_position(position, new_balance)
                 balance -= signal.size_usd
 
+                from trader.live_history import get_live_history
+
+                get_live_history().record_open(
+                    question=signal.prediction.question,
+                    side=signal.prediction.recommended_side,
+                    entry_price=signal.price,
+                    size_usd=signal.size_usd,
+                    shares=signal.size_usd / signal.price if signal.price > 0 else 0,
+                    token_id=signal.token_id,
+                    market_id=signal.market_id,
+                    edge=signal.prediction.edge * 100,
+                    confidence=signal.prediction.confidence * 100,
+                    source="ai",
+                )
+
         # Weather scan — те же погодные рынки что в paper mode
         if settings.weather_enabled:
             try:
@@ -724,6 +739,21 @@ def run_live_trading(max_markets: int = 200) -> None:
                             balance -= trade_size
                             weather_opened += 1
                             open_ids.add(wp.market_id)
+                            # Записываем в live trade history
+                            from trader.live_history import get_live_history
+
+                            get_live_history().record_open(
+                                question=wp.question,
+                                side=wp.recommended_side,
+                                entry_price=price,
+                                size_usd=trade_size,
+                                shares=size_shares,
+                                token_id=token_id,
+                                market_id=wp.market_id,
+                                edge=wp.edge * 100,
+                                confidence=wp.confidence * 100,
+                                source="weather",
+                            )
                             # Записываем в историю сигналов
                             signals_history.record_weather_signal(
                                 market_id=wp.market_id,
