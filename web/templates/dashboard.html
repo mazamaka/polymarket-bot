@@ -208,12 +208,20 @@
             <span class="hint">Default trade size in USD</span>
         </div>
         <div class="setting-item">
-            <label>Stop-loss (%)</label>
+            <label>AI Stop-loss (%)</label>
             <input type="number" id="set-sl" step="5" min="5" max="80">
         </div>
         <div class="setting-item">
-            <label>Take-profit (%)</label>
+            <label>AI Take-profit (%)</label>
             <input type="number" id="set-tp" step="5" min="5" max="200">
+        </div>
+        <div class="setting-item">
+            <label>Weather SL (%)</label>
+            <input type="number" id="set-weather-sl" step="5" min="10" max="90">
+        </div>
+        <div class="setting-item">
+            <label>Weather TP (%)</label>
+            <input type="number" id="set-weather-tp" step="5" min="10" max="200">
         </div>
     </div>
     <div class="settings-actions">
@@ -815,6 +823,8 @@ const settingsMap = {
     'set-trade-size': 'default_trade_size_usd',
     'set-sl': 'stop_loss_pct',
     'set-tp': 'take_profit_pct',
+    'set-weather-sl': 'weather_stop_loss_pct',
+    'set-weather-tp': 'weather_take_profit_pct',
 };
 
 async function loadSettings() {
@@ -831,6 +841,8 @@ async function loadSettings() {
     el('set-trade-size').value = d.default_trade_size_usd;
     el('set-sl').value = d.stop_loss_pct;
     el('set-tp').value = d.take_profit_pct;
+    el('set-weather-sl').value = d.weather_stop_loss_pct;
+    el('set-weather-tp').value = d.weather_take_profit_pct;
 }
 
 function toggleSettings() {

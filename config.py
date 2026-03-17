@@ -15,12 +15,24 @@ class Settings(BaseSettings):
     max_total_exposure_pct: float = (
         0.60  # 60% общая экспозиция (увеличена: weather + AI раздельные бюджеты)
     )
-    min_edge_threshold: float = 0.08  # 8% минимальный edge для AI (было 5% — слишком много skip)
+    min_edge_threshold: float = (
+        0.08  # 8% минимальный edge для AI (было 5% — слишком много skip)
+    )
     max_edge_threshold: float = 0.40  # 40% макс edge (больше = AI ошибается)
-    stop_loss_pct: float = 0.30  # -30% stop-loss
-    take_profit_pct: float = 0.20  # +20% take-profit
+    stop_loss_pct: float = 0.40  # -40% stop-loss (default, used for AI markets)
+    take_profit_pct: float = 0.50  # +50% take-profit (default, used for AI markets)
+
+    # Weather-specific SL/TP (binary markets, ~90%+ win rate → hold longer)
+    weather_stop_loss_pct: float = (
+        0.50  # -50% SL (wider: weather markets recover often)
+    )
+    weather_take_profit_pct: float = (
+        0.80  # +80% TP (let winners run closer to resolution)
+    )
     max_concurrent_positions: int = 35  # Общий лимит (AI + weather)
-    min_confidence: float = 0.40  # 40% мин. уверенность Claude (было 30% — пускал мусор)
+    min_confidence: float = (
+        0.40  # 40% мин. уверенность Claude (было 30% — пускал мусор)
+    )
     min_liquidity_usd: float = 300.0  # мин. ликвидность (снижена для охвата)
     ai_min_confidence: float = 0.50  # AI-specific: минимум 50% confidence
     ai_max_positions: int = 10  # AI-specific: макс позиций
@@ -28,7 +40,9 @@ class Settings(BaseSettings):
     ai_max_hours_to_resolution: float = 168.0  # AI: макс 7 дней до закрытия
 
     # Timing
-    max_hours_to_resolution: float = 168.0  # 7 дней макс. — быстрый оборот для статистики
+    max_hours_to_resolution: float = (
+        168.0  # 7 дней макс. — быстрый оборот для статистики
+    )
     min_hours_to_resolution: float = 0.0  # без ограничения снизу
 
     # Weather Analyzer

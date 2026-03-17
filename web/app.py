@@ -554,6 +554,8 @@ async def api_get_settings() -> JSONResponse:
             "default_trade_size_usd": settings.default_trade_size_usd,
             "stop_loss_pct": settings.stop_loss_pct * 100,
             "take_profit_pct": settings.take_profit_pct * 100,
+            "weather_stop_loss_pct": settings.weather_stop_loss_pct * 100,
+            "weather_take_profit_pct": settings.weather_take_profit_pct * 100,
         }
     )
 
@@ -576,6 +578,8 @@ async def api_update_settings(request: Request) -> JSONResponse:
         "default_trade_size_usd": ("default_trade_size_usd", 1.0),
         "stop_loss_pct": ("stop_loss_pct", 0.01),
         "take_profit_pct": ("take_profit_pct", 0.01),
+        "weather_stop_loss_pct": ("weather_stop_loss_pct", 0.01),
+        "weather_take_profit_pct": ("weather_take_profit_pct", 0.01),
     }
     updated = []
     for key, value in data.items():
@@ -860,6 +864,18 @@ def _live_monitor_check() -> None:
 
     _POLYMARKET_MIN_SIZE = 5.0
 
+    def _is_weather(q: str) -> bool:
+        q_lower = q.lower()
+        return any(
+            kw in q_lower
+            for kw in ("temperature", "°f", "°c", "highest temp", "lowest temp")
+        )
+
+    def _get_sl_tp(question: str) -> tuple[float, float]:
+        if _is_weather(question):
+            return _s.weather_stop_loss_pct, _s.weather_take_profit_pct
+        return _s.stop_loss_pct, _s.take_profit_pct
+
     # Check if any positions need SL/TP — if so, cancel all orders first
     needs_sl_tp = False
     for pos in positions:
@@ -872,7 +888,8 @@ def _live_monitor_check() -> None:
         if shares < _POLYMARKET_MIN_SIZE:
             continue
         pnl_pct = pos.get("pnl_pct_raw", 0.0)
-        if pnl_pct <= -_s.stop_loss_pct or pnl_pct >= _s.take_profit_pct:
+        sl_pct, tp_pct = _get_sl_tp(pos.get("question", ""))
+        if pnl_pct <= -sl_pct or pnl_pct >= tp_pct:
             needs_sl_tp = True
             break
 
@@ -896,10 +913,11 @@ def _live_monitor_check() -> None:
         cur_price = pos.get("current", 0.0)
         shares = pos.get("shares", 0.0)
         question = pos.get("question", "")[:50]
+        sl_pct, tp_pct = _get_sl_tp(pos.get("question", ""))
 
         # Skip positions below Polymarket minimum order size
         if shares < _POLYMARKET_MIN_SIZE:
-            if pnl_pct <= -_s.stop_loss_pct or pnl_pct >= _s.take_profit_pct:
+            if pnl_pct <= -sl_pct or pnl_pct >= tp_pct:
                 logger.info(
                     "SKIP SL/TP for %s: %.2f shares < min %d",
                     question,
@@ -910,7 +928,7 @@ def _live_monitor_check() -> None:
             continue
 
         # Stop-loss
-        if pnl_pct <= -_s.stop_loss_pct:
+        if pnl_pct <= -sl_pct:
             sell_price = max(0.001, min(0.999, round(cur_price * 0.95, 4)))
             logger.warning(
                 "STOP-LOSS: %s | PnL: %.1f%% | Selling %.2f shares @ %.4f",
@@ -956,7 +974,7 @@ def _live_monitor_check() -> None:
             continue
 
         # Take-profit
-        if pnl_pct >= _s.take_profit_pct:
+        if pnl_pct >= tp_pct:
             sell_price = max(0.001, min(0.999, round(cur_price, 4)))
             logger.info(
                 "TAKE-PROFIT: %s | PnL: %.1f%% | Selling %.2f shares @ %.4f",

@@ -117,8 +117,10 @@ SSEListener(on_breaking_match=callback, on_log=logger)
 | `max_total_exposure_pct` | 60% | Общая экспозиция (AI + weather) |
 | `min_edge_threshold` | 8% | Мин. edge для AI рынков |
 | `max_edge_threshold` | 40% | Макс. edge (больше = AI ошибается) |
-| `stop_loss_pct` | 30% | Stop-loss |
-| `take_profit_pct` | 20% | Take-profit |
+| `stop_loss_pct` | 40% | Stop-loss (AI markets) |
+| `take_profit_pct` | 50% | Take-profit (AI markets) |
+| `weather_stop_loss_pct` | 50% | Stop-loss (weather markets) |
+| `weather_take_profit_pct` | 80% | Take-profit (weather markets) |
 | `max_concurrent_positions` | 35 | AI (10) + Weather (25) |
 | `min_confidence` | 40% | Мин. уверенность Claude |
 | `ai_min_confidence` | 50% | AI-specific minimum |
