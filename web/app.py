@@ -30,7 +30,9 @@ _POSITIONS_CACHE_TTL: int = 30  # seconds
 # --- SL/TP tracking: avoid duplicate sell orders ---
 _sl_tp_triggered: set[str] = set()
 _sl_tp_retries: dict[str, int] = {}  # token_id -> retry count
+_sl_tp_gave_up_ts: dict[str, float] = {}  # token_id -> when gave up
 _SL_MAX_RETRIES = 3
+_GAVE_UP_RETRY_INTERVAL = 600  # retry gave-up positions after 10 min
 
 
 class SellRequest(BaseModel):
@@ -751,6 +753,28 @@ def _run_analysis_bg() -> None:
         _set_status("idle", f"Error: {e}")
 
 
+def _cancel_existing_orders_for_token(
+    executor: "LiveExecutor", token_id: str, question: str
+) -> None:
+    """Cancel all open orders for a given token before placing SL/TP order."""
+    try:
+        orders = executor.get_open_orders()
+        for order in orders:
+            order_asset = ""
+            order_id = ""
+            if isinstance(order, dict):
+                order_asset = order.get("asset_id", "")
+                order_id = order.get("id", "")
+            else:
+                order_asset = getattr(order, "asset_id", "")
+                order_id = getattr(order, "id", "")
+            if order_asset == token_id and order_id:
+                executor.cancel_order(order_id)
+                logger.info("Cancelled order %s for %s", order_id[:16], question)
+    except Exception as e:
+        logger.warning("Failed to cancel orders for %s: %s", question, e)
+
+
 def _live_monitor_check() -> None:
     """Проверить live позиции на SL/TP и выполнить sell при срабатывании."""
     global _sl_tp_triggered
@@ -759,6 +783,15 @@ def _live_monitor_check() -> None:
 
     if _s.paper_trading:
         return
+
+    # Reset gave-up positions after retry interval
+    now = time.monotonic()
+    for token_id in list(_sl_tp_gave_up_ts):
+        if now - _sl_tp_gave_up_ts[token_id] >= _GAVE_UP_RETRY_INTERVAL:
+            _sl_tp_triggered.discard(token_id)
+            _sl_tp_retries.pop(token_id, None)
+            del _sl_tp_gave_up_ts[token_id]
+            logger.info("Reset GAVE UP for %s — will retry", token_id[:16])
 
     # Force cache refresh
     global _positions_cache_ts
@@ -769,6 +802,8 @@ def _live_monitor_check() -> None:
         return
 
     from trader.live_executor import get_live_executor
+
+    _POLYMARKET_MIN_SIZE = 5.0
 
     for pos in positions:
         token_id = pos.get("token_id", "")
@@ -784,6 +819,18 @@ def _live_monitor_check() -> None:
         shares = pos.get("shares", 0.0)
         question = pos.get("question", "")[:50]
 
+        # Skip positions below Polymarket minimum order size
+        if shares < _POLYMARKET_MIN_SIZE:
+            if pnl_pct <= -_s.stop_loss_pct or pnl_pct >= _s.take_profit_pct:
+                logger.info(
+                    "SKIP SL/TP for %s: %.2f shares < min %d",
+                    question,
+                    shares,
+                    _POLYMARKET_MIN_SIZE,
+                )
+                _sl_tp_triggered.add(token_id)
+            continue
+
         # Stop-loss
         if pnl_pct <= -_s.stop_loss_pct:
             sell_price = max(0.001, min(0.999, round(cur_price * 0.95, 4)))
@@ -796,6 +843,7 @@ def _live_monitor_check() -> None:
             )
             try:
                 executor = get_live_executor()
+                _cancel_existing_orders_for_token(executor, token_id, question)
                 executor.execute_sell_order(token_id, sell_price, shares)
                 _sl_tp_triggered.add(token_id)
                 sync_broadcast(
@@ -806,6 +854,7 @@ def _live_monitor_check() -> None:
                 _sl_tp_retries[token_id] = _sl_tp_retries.get(token_id, 0) + 1
                 if _sl_tp_retries[token_id] >= _SL_MAX_RETRIES:
                     _sl_tp_triggered.add(token_id)
+                    _sl_tp_gave_up_ts[token_id] = time.monotonic()
                     logger.error(
                         "SL GAVE UP after %d retries for %s: %s",
                         _SL_MAX_RETRIES,
@@ -834,6 +883,7 @@ def _live_monitor_check() -> None:
             )
             try:
                 executor = get_live_executor()
+                _cancel_existing_orders_for_token(executor, token_id, question)
                 executor.execute_sell_order(token_id, sell_price, shares)
                 _sl_tp_triggered.add(token_id)
                 sync_broadcast(
@@ -844,6 +894,7 @@ def _live_monitor_check() -> None:
                 _sl_tp_retries[token_id] = _sl_tp_retries.get(token_id, 0) + 1
                 if _sl_tp_retries[token_id] >= _SL_MAX_RETRIES:
                     _sl_tp_triggered.add(token_id)
+                    _sl_tp_gave_up_ts[token_id] = time.monotonic()
                     logger.error(
                         "TP GAVE UP after %d retries for %s: %s",
                         _SL_MAX_RETRIES,
@@ -886,10 +937,12 @@ def _live_monitor_check() -> None:
     # Clean up: remove tokens no longer in positions
     current_tokens = {p.get("token_id", "") for p in positions}
     _sl_tp_triggered &= current_tokens
-    # Clean up retries for closed positions
     for k in list(_sl_tp_retries):
         if k not in current_tokens:
             del _sl_tp_retries[k]
+    for k in list(_sl_tp_gave_up_ts):
+        if k not in current_tokens:
+            del _sl_tp_gave_up_ts[k]
 
 
 async def _price_monitor_loop(interval_sec: int = 180) -> None:
