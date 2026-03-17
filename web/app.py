@@ -753,26 +753,25 @@ def _run_analysis_bg() -> None:
         _set_status("idle", f"Error: {e}")
 
 
-def _cancel_existing_orders_for_token(
-    executor: "LiveExecutor", token_id: str, question: str
-) -> None:
-    """Cancel all open orders for a given token before placing SL/TP order."""
+def _cancel_all_open_orders(executor: "LiveExecutor") -> int:
+    """Cancel ALL open orders to free locked balance before SL/TP sells."""
+    cancelled = 0
     try:
         orders = executor.get_open_orders()
         for order in orders:
-            order_asset = ""
             order_id = ""
             if isinstance(order, dict):
-                order_asset = order.get("asset_id", "")
                 order_id = order.get("id", "")
             else:
-                order_asset = getattr(order, "asset_id", "")
                 order_id = getattr(order, "id", "")
-            if order_asset == token_id and order_id:
+            if order_id:
                 executor.cancel_order(order_id)
-                logger.info("Cancelled order %s for %s", order_id[:16], question)
+                cancelled += 1
+        if cancelled:
+            logger.info("Cancelled %d open orders before SL/TP", cancelled)
     except Exception as e:
-        logger.warning("Failed to cancel orders for %s: %s", question, e)
+        logger.warning("Failed to cancel open orders: %s", e)
+    return cancelled
 
 
 def _live_monitor_check() -> None:
@@ -804,6 +803,29 @@ def _live_monitor_check() -> None:
     from trader.live_executor import get_live_executor
 
     _POLYMARKET_MIN_SIZE = 5.0
+
+    # Check if any positions need SL/TP — if so, cancel all orders first
+    needs_sl_tp = False
+    for pos in positions:
+        token_id = pos.get("token_id", "")
+        if not token_id or token_id in _sl_tp_triggered:
+            continue
+        if pos.get("resolved"):
+            continue
+        shares = pos.get("shares", 0.0)
+        if shares < _POLYMARKET_MIN_SIZE:
+            continue
+        pnl_pct = pos.get("pnl_pct_raw", 0.0)
+        if pnl_pct <= -_s.stop_loss_pct or pnl_pct >= _s.take_profit_pct:
+            needs_sl_tp = True
+            break
+
+    if needs_sl_tp:
+        try:
+            executor = get_live_executor()
+            _cancel_all_open_orders(executor)
+        except Exception as e:
+            logger.warning("Failed to get executor for order cancellation: %s", e)
 
     for pos in positions:
         token_id = pos.get("token_id", "")
@@ -843,7 +865,7 @@ def _live_monitor_check() -> None:
             )
             try:
                 executor = get_live_executor()
-                _cancel_existing_orders_for_token(executor, token_id, question)
+
                 executor.execute_sell_order(token_id, sell_price, shares)
                 _sl_tp_triggered.add(token_id)
                 sync_broadcast(
@@ -883,7 +905,7 @@ def _live_monitor_check() -> None:
             )
             try:
                 executor = get_live_executor()
-                _cancel_existing_orders_for_token(executor, token_id, question)
+
                 executor.execute_sell_order(token_id, sell_price, shares)
                 _sl_tp_triggered.add(token_id)
                 sync_broadcast(
