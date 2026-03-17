@@ -194,10 +194,17 @@ class LiveExecutor:
         if size <= 0:
             raise ValueError(f"Size must be positive, got {size}")
 
+        import math
+
+        # Floor size to avoid selling more shares than available
+        # (standard round can round UP, exceeding on-chain balance)
+        floored_size = math.floor(size * 100) / 100
+        if floored_size < size:
+            logger.info("Size floored: %.6f -> %.2f", size, floored_size)
         order_args = OrderArgs(
             token_id=token_id,
             price=round(price, 4),
-            size=round(size, 2),
+            size=floored_size,
             side="SELL",
         )
         logger.info(
