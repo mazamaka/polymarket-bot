@@ -112,6 +112,7 @@ def _fetch_live_positions() -> list[dict]:
                 "icon": p.get("icon", ""),
                 "outcome": outcome,
                 "redeemable": p.get("redeemable", False),
+                "resolved": bool(p.get("redeemable", False)),
                 "event_id": p.get("eventId", ""),
             }
         )
@@ -124,14 +125,31 @@ def _fetch_live_positions() -> list[dict]:
 
 def _live_portfolio(balance: float) -> dict:
     """Сформировать portfolio summary для live режима."""
-    positions = _fetch_live_positions()
+    all_positions = _fetch_live_positions()
 
-    invested = sum(p["size"] for p in positions)
-    unrealized_pnl = sum(p["pnl"] for p in positions)
-    total_equity = balance + invested + unrealized_pnl
+    # Separate open vs resolved positions
+    open_positions = [p for p in all_positions if not p.get("resolved")]
+    resolved_positions = [p for p in all_positions if p.get("resolved")]
+
+    # Open positions: unrealized PnL
+    invested = sum(p["size"] for p in open_positions)
+    unrealized_pnl = sum(p["pnl"] for p in open_positions)
+
+    # Resolved positions: realized PnL (won or lost)
+    realized_pnl = sum(p["pnl"] for p in resolved_positions)
+    resolved_claimable = sum(p["current_value"] for p in resolved_positions)
+    win_count = sum(1 for p in resolved_positions if p["pnl"] > 0)
+
+    # Total equity = free balance + open positions at market value + claimable from resolved
+    total_equity = balance + invested + unrealized_pnl + resolved_claimable
+    total_initial_investment = sum(p["size"] for p in all_positions)
     roi_pct = (
-        ((total_equity - balance - invested) / (balance + invested) * 100)
-        if (balance + invested) > 0
+        (
+            (total_equity - balance - total_initial_investment)
+            / max(total_initial_investment, 0.01)
+            * 100
+        )
+        if total_initial_investment > 0
         else 0.0
     )
     exposure_pct = round(invested / total_equity * 100, 1) if total_equity > 0 else 0.0
@@ -141,18 +159,20 @@ def _live_portfolio(balance: float) -> dict:
         "invested_usd": round(invested, 4),
         "total_equity": round(total_equity, 4),
         "roi_pct": round(roi_pct, 2),
-        "open_positions": len(positions),
-        "total_trades": len(positions),
-        "closed_trades": 0,
-        "win_count": 0,
-        "win_rate": 0,
+        "open_positions": len(open_positions),
+        "total_trades": len(all_positions),
+        "closed_trades": len(resolved_positions),
+        "win_count": win_count,
+        "win_rate": round(win_count / len(resolved_positions) * 100, 1)
+        if resolved_positions
+        else 0,
         "unrealized_pnl": round(unrealized_pnl, 4),
-        "realized_pnl": 0,
+        "realized_pnl": round(realized_pnl, 4),
         "avg_edge": 0,
         "exposure_pct": exposure_pct,
-        "free_slots": max(0, 35 - len(positions)),
+        "free_slots": max(0, 35 - len(open_positions)),
         "max_positions": 35,
-        "positions": positions,
+        "positions": all_positions,
         "mode": "live",
     }
 
@@ -755,6 +775,10 @@ def _live_monitor_check() -> None:
         if not token_id or token_id in _sl_tp_triggered:
             continue
 
+        # Skip resolved positions -- they cannot be sold, only redeemed
+        if pos.get("resolved"):
+            continue
+
         pnl_pct = pos.get("pnl_pct_raw", 0.0)
         cur_price = pos.get("current", 0.0)
         shares = pos.get("shares", 0.0)
@@ -834,6 +858,30 @@ def _live_monitor_check() -> None:
                         question,
                         e,
                     )
+
+    # Auto-redeem resolved positions
+    redeemable = [p for p in positions if p.get("redeemable")]
+    if redeemable:
+        try:
+            from trader.redeemer import redeem_resolved_positions
+
+            results = redeem_resolved_positions(redeemable)
+            for r in results:
+                if r["success"]:
+                    sync_broadcast(
+                        "log",
+                        f"REDEEMED: {r['question'][:50]} | tx: {r['tx_hash'][:16]}...",
+                    )
+                else:
+                    logger.error(
+                        "Redeem failed for %s: %s",
+                        r["question"][:50],
+                        r.get("error", "unknown"),
+                    )
+        except ValueError as e:
+            logger.error("Auto-redeem config error: %s", e)
+        except RuntimeError as e:
+            logger.error("Auto-redeem RPC error: %s", e)
 
     # Clean up: remove tokens no longer in positions
     current_tokens = {p.get("token_id", "") for p in positions}
@@ -1084,6 +1132,58 @@ async def api_cancel_order(req: CancelOrderRequest) -> JSONResponse:
     except Exception as e:
         logger.error("Cancel order error: %s", e)
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/redeem")
+async def api_redeem(background_tasks: BackgroundTasks) -> JSONResponse:
+    """Manually trigger redemption of resolved positions."""
+    from config import settings as _s
+
+    if _s.paper_trading:
+        return JSONResponse(
+            {"status": "error", "message": "Redeem disabled in paper mode"},
+            status_code=400,
+        )
+
+    background_tasks.add_task(_redeem_bg)
+    return JSONResponse({"status": "started"})
+
+
+def _redeem_bg() -> None:
+    """Background task for manual redeem."""
+    global _positions_cache_ts
+    _positions_cache_ts = 0.0
+    positions = _fetch_live_positions()
+
+    redeemable = [p for p in positions if p.get("redeemable")]
+    if not redeemable:
+        sync_broadcast("log", "No redeemable positions found")
+        return
+
+    sync_broadcast("log", f"Redeeming {len(redeemable)} resolved position(s)...")
+    try:
+        from trader.redeemer import redeem_resolved_positions
+
+        results = redeem_resolved_positions(redeemable)
+        for r in results:
+            if r["success"]:
+                sync_broadcast(
+                    "log",
+                    f"REDEEMED: {r['question'][:50]} | tx: {r['tx_hash'][:16]}...",
+                )
+            else:
+                sync_broadcast(
+                    "log",
+                    f"REDEEM FAILED: {r['question'][:50]} | {r.get('error', 'unknown')}",
+                )
+        if not results:
+            sync_broadcast("log", "Redeem skipped (cooldown active or no redeemable)")
+    except ValueError as e:
+        logger.error("Redeem config error: %s", e)
+        sync_broadcast("log", f"Redeem error: {e}")
+    except RuntimeError as e:
+        logger.error("Redeem RPC error: %s", e)
+        sync_broadcast("log", f"Redeem RPC error: {e}")
 
 
 @app.get("/api/live-positions")
