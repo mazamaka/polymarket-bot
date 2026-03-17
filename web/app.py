@@ -114,7 +114,8 @@ def _fetch_live_positions() -> list[dict]:
                 "icon": p.get("icon", ""),
                 "outcome": outcome,
                 "redeemable": p.get("redeemable", False),
-                "resolved": bool(p.get("redeemable", False)),
+                "resolved": bool(p.get("redeemable", False))
+                or (cur_price == 0.0 and current_value == 0.0 and size_val > 0),
                 "event_id": p.get("eventId", ""),
             }
         )
@@ -1018,8 +1019,10 @@ def _live_monitor_check() -> None:
                         e,
                     )
 
-    # Auto-redeem resolved positions
-    redeemable = [p for p in positions if p.get("redeemable")]
+    # Auto-redeem resolved positions (skip worthless ones — value=0 means we lost)
+    redeemable = [
+        p for p in positions if p.get("redeemable") and p.get("current_value", 0) > 0
+    ]
     if redeemable:
         try:
             from trader.redeemer import redeem_resolved_positions

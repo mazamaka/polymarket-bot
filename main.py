@@ -590,14 +590,33 @@ def run_live_trading(max_markets: int = 200) -> None:
             return
 
         # Dedup: проверяем реальные позиции из Data API, не paper storage
+        # Data API возвращает conditionId (hex), Gamma API использует числовой id
+        # Собираем оба + token_id для надёжного dedup
+        open_condition_ids: set[str] = set()
+        open_token_ids: set[str] = set()
         try:
             real_positions = executor.get_live_positions()
-            open_ids = {p["market_id"] for p in real_positions if p.get("market_id")}
-            logger.info("Live dedup: %d open market IDs from Data API", len(open_ids))
+            open_condition_ids = {
+                p["market_id"] for p in real_positions if p.get("market_id")
+            }
+            open_token_ids = {
+                p["token_id"] for p in real_positions if p.get("token_id")
+            }
+            logger.info(
+                "Live dedup: %d conditionIds, %d tokenIds from Data API",
+                len(open_condition_ids),
+                len(open_token_ids),
+            )
         except Exception as e:
             logger.warning("Failed to get live positions for dedup, using paper: %s", e)
-            open_ids = storage.get_open_market_ids()
-        to_screen = [m for m in tradeable if m.id not in open_ids]
+            open_condition_ids = storage.get_open_market_ids()
+        # Filter by both Gamma id and conditionId
+        to_screen = [
+            m
+            for m in tradeable
+            if m.id not in open_condition_ids
+            and m.condition_id not in open_condition_ids
+        ]
         interesting = analyzer.batch_screen_markets(to_screen)
 
         if not interesting:
@@ -663,18 +682,22 @@ def run_live_trading(max_markets: int = 200) -> None:
                     min_edge=settings.weather_min_edge,
                 )
                 weather_opened = 0
-                # Refresh open_ids to include any just-opened AI positions
+                # Refresh dedup sets to include any just-opened AI positions
                 try:
                     real_positions = executor.get_live_positions()
-                    open_ids = {
+                    open_condition_ids = {
                         p["market_id"] for p in real_positions if p.get("market_id")
+                    }
+                    open_token_ids = {
+                        p["token_id"] for p in real_positions if p.get("token_id")
                     }
                 except Exception:
                     pass
 
                 for wd in weather_predictions:
                     wp = wd.prediction
-                    if wp.market_id in open_ids:
+                    # Dedup by both Gamma id and conditionId
+                    if wp.market_id in open_condition_ids:
                         continue
 
                     direction = wd.direction
@@ -703,6 +726,10 @@ def run_live_trading(max_markets: int = 200) -> None:
                     if not weather_market or not weather_market.clob_token_ids:
                         continue
 
+                    # Double-check dedup by conditionId and token_id
+                    if weather_market.condition_id in open_condition_ids:
+                        continue
+
                     # Определяем token_id
                     if wp.recommended_side == "BUY_YES":
                         token_id = weather_market.clob_token_ids[0]
@@ -710,6 +737,9 @@ def run_live_trading(max_markets: int = 200) -> None:
                         token_id = weather_market.clob_token_ids[1]
                     else:
                         token_id = weather_market.clob_token_ids[0]
+
+                    if token_id in open_token_ids:
+                        continue
 
                     trade_size = settings.weather_trade_size_usd
                     if trade_size > balance:
@@ -738,7 +768,9 @@ def run_live_trading(max_markets: int = 200) -> None:
                         if result and result.get("success"):
                             balance -= trade_size
                             weather_opened += 1
-                            open_ids.add(wp.market_id)
+                            open_condition_ids.add(wp.market_id)
+                            open_condition_ids.add(weather_market.condition_id)
+                            open_token_ids.add(token_id)
                             # Записываем в live trade history
                             from trader.live_history import get_live_history
 
