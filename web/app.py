@@ -27,12 +27,36 @@ _positions_cache: list[dict] = []
 _positions_cache_ts: float = 0.0
 _POSITIONS_CACHE_TTL: int = 30  # seconds
 
-# --- SL/TP tracking: avoid duplicate sell orders ---
-_sl_tp_triggered: set[str] = set()
-_sl_tp_retries: dict[str, int] = {}  # token_id -> retry count
-_sl_tp_gave_up_ts: dict[str, float] = {}  # token_id -> when gave up
+# --- SL/TP tracking: avoid duplicate sell orders (PERSISTENT) ---
+_SL_TP_FILE = Path("data") / "sl_tp_triggered.json"
 _SL_MAX_RETRIES = 3
 _GAVE_UP_RETRY_INTERVAL = 600  # retry gave-up positions after 10 min
+
+
+def _load_sl_tp_triggered() -> set[str]:
+    """Load SL/TP triggered set from disk (survives container restarts)."""
+    if _SL_TP_FILE.exists():
+        try:
+            data = json.loads(_SL_TP_FILE.read_text())
+            return set(data.get("triggered", []))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return set()
+
+
+def _save_sl_tp_triggered(triggered: set[str]) -> None:
+    """Save SL/TP triggered set to disk."""
+    try:
+        Path("data").mkdir(exist_ok=True)
+        _SL_TP_FILE.write_text(json.dumps({"triggered": list(triggered)}, indent=2))
+    except OSError as e:
+        logging.getLogger(__name__).warning("Failed to save SL/TP state: %s", e)
+
+
+_sl_tp_triggered: set[str] = _load_sl_tp_triggered()
+_sl_tp_retries: dict[str, int] = {}  # token_id -> retry count
+_sl_tp_gave_up_ts: dict[str, float] = {}  # token_id -> when gave up
+_monitor_running: bool = False  # prevent concurrent monitor checks
 
 
 class SellRequest(BaseModel):
@@ -811,6 +835,29 @@ def _record_live_trade(
         history = get_live_history()
         entry_price = pos.get("entry", 0.0)
         size_usd = pos.get("size", 0.0)
+
+        # Fallback: if Data API returns avgPrice=0, look up entry from OPEN records
+        if entry_price <= 0:
+            token_id = pos.get("token_id", "")
+            market_id = pos.get("market_id", "")
+            # First try exact token_id match (avoids YES/NO confusion on same market)
+            for h in reversed(history.history):
+                if h.get("action") != "OPEN":
+                    continue
+                if token_id and h.get("token_id") == token_id:
+                    entry_price = h.get("entry_price", 0.0)
+                    if entry_price > 0:
+                        break
+            # Fallback to market_id only if token_id didn't match
+            if entry_price <= 0:
+                for h in reversed(history.history):
+                    if h.get("action") != "OPEN":
+                        continue
+                    if market_id and h.get("market_id") == market_id:
+                        entry_price = h.get("entry_price", 0.0)
+                        if entry_price > 0:
+                            break
+
         # PnL based on actual exit price, not current market pnl_pct
         if entry_price > 0:
             pnl = (sell_price - entry_price) / entry_price * size_usd
@@ -856,12 +903,29 @@ def _cancel_all_open_orders(executor: "LiveExecutor") -> int:
 
 def _live_monitor_check() -> None:
     """Проверить live позиции на SL/TP и выполнить sell при срабатывании."""
-    global _sl_tp_triggered
+    global _sl_tp_triggered, _monitor_running
+
+    if _monitor_running:
+        logger.info("Monitor already running, skipping")
+        return
 
     from config import settings as _s
 
     if _s.paper_trading:
         return
+
+    _monitor_running = True
+    try:
+        _live_monitor_check_inner()
+    finally:
+        _monitor_running = False
+
+
+def _live_monitor_check_inner() -> None:
+    """Inner logic — SL/TP checks on live positions."""
+    global _sl_tp_triggered
+
+    from config import settings as _s
 
     # Reset gave-up positions after retry interval
     now = time.monotonic()
@@ -891,8 +955,12 @@ def _live_monitor_check() -> None:
             for kw in ("temperature", "°f", "°c", "highest temp", "lowest temp")
         )
 
-    def _get_sl_tp(question: str) -> tuple[float, float]:
+    def _get_sl_tp(question: str, entry_price: float) -> tuple[float, float]:
         if _is_weather(question):
+            # For cheap weather tokens (entry < $0.15), disable SL — hold to resolution.
+            # Max risk is $3 per position, SL on volatile micro-price tokens kills winners.
+            if 0 < entry_price < 0.15:
+                return 999.0, _s.weather_take_profit_pct  # effectively no SL
             return _s.weather_stop_loss_pct, _s.weather_take_profit_pct
         return _s.stop_loss_pct, _s.take_profit_pct
 
@@ -908,7 +976,8 @@ def _live_monitor_check() -> None:
         if shares < _POLYMARKET_MIN_SIZE:
             continue
         pnl_pct = pos.get("pnl_pct_raw", 0.0)
-        sl_pct, tp_pct = _get_sl_tp(pos.get("question", ""))
+        entry_price = pos.get("entry", 0.0)
+        sl_pct, tp_pct = _get_sl_tp(pos.get("question", ""), entry_price)
         if pnl_pct <= -sl_pct or pnl_pct >= tp_pct:
             needs_sl_tp = True
             break
@@ -931,9 +1000,10 @@ def _live_monitor_check() -> None:
 
         pnl_pct = pos.get("pnl_pct_raw", 0.0)
         cur_price = pos.get("current", 0.0)
+        entry_price = pos.get("entry", 0.0)
         shares = pos.get("shares", 0.0)
         question = pos.get("question", "")[:50]
-        sl_pct, tp_pct = _get_sl_tp(pos.get("question", ""))
+        sl_pct, tp_pct = _get_sl_tp(pos.get("question", ""), entry_price)
 
         # Skip positions below Polymarket minimum order size
         if shares < _POLYMARKET_MIN_SIZE:
@@ -945,6 +1015,7 @@ def _live_monitor_check() -> None:
                     _POLYMARKET_MIN_SIZE,
                 )
                 _sl_tp_triggered.add(token_id)
+                _save_sl_tp_triggered(_sl_tp_triggered)
             continue
 
         # Stop-loss
@@ -962,6 +1033,7 @@ def _live_monitor_check() -> None:
 
                 executor.execute_sell_order(token_id, sell_price, shares)
                 _sl_tp_triggered.add(token_id)
+                _save_sl_tp_triggered(_sl_tp_triggered)
                 _record_live_trade(
                     pos,
                     sell_price,
@@ -976,6 +1048,7 @@ def _live_monitor_check() -> None:
                 _sl_tp_retries[token_id] = _sl_tp_retries.get(token_id, 0) + 1
                 if _sl_tp_retries[token_id] >= _SL_MAX_RETRIES:
                     _sl_tp_triggered.add(token_id)
+                    _save_sl_tp_triggered(_sl_tp_triggered)
                     _sl_tp_gave_up_ts[token_id] = time.monotonic()
                     logger.error(
                         "SL GAVE UP after %d retries for %s: %s",
@@ -1008,6 +1081,7 @@ def _live_monitor_check() -> None:
 
                 executor.execute_sell_order(token_id, sell_price, shares)
                 _sl_tp_triggered.add(token_id)
+                _save_sl_tp_triggered(_sl_tp_triggered)
                 _record_live_trade(
                     pos,
                     sell_price,
@@ -1022,6 +1096,7 @@ def _live_monitor_check() -> None:
                 _sl_tp_retries[token_id] = _sl_tp_retries.get(token_id, 0) + 1
                 if _sl_tp_retries[token_id] >= _SL_MAX_RETRIES:
                     _sl_tp_triggered.add(token_id)
+                    _save_sl_tp_triggered(_sl_tp_triggered)
                     _sl_tp_gave_up_ts[token_id] = time.monotonic()
                     logger.error(
                         "TP GAVE UP after %d retries for %s: %s",
@@ -1072,15 +1147,23 @@ def _live_monitor_check() -> None:
         except RuntimeError as e:
             logger.error("Auto-redeem RPC error: %s", e)
 
-    # Clean up: remove tokens no longer in positions
-    current_tokens = {p.get("token_id", "") for p in positions}
-    _sl_tp_triggered &= current_tokens
-    for k in list(_sl_tp_retries):
-        if k not in current_tokens:
-            del _sl_tp_retries[k]
-    for k in list(_sl_tp_gave_up_ts):
-        if k not in current_tokens:
-            del _sl_tp_gave_up_ts[k]
+    # Clean up: remove tokens no longer in positions.
+    # Guard: only cleanup if Data API returned reasonable data (prevents wiping
+    # _sl_tp_triggered on transient API errors which would cause duplicate sells).
+    if positions and len(positions) >= max(1, len(_sl_tp_triggered) // 2):
+        current_tokens = {p.get("token_id", "") for p in positions}
+        old_size = len(_sl_tp_triggered)
+        _sl_tp_triggered &= current_tokens
+        if len(_sl_tp_triggered) != old_size:
+            _save_sl_tp_triggered(_sl_tp_triggered)
+        for k in list(_sl_tp_retries):
+            if k not in current_tokens:
+                del _sl_tp_retries[k]
+        for k in list(_sl_tp_gave_up_ts):
+            if k not in current_tokens:
+                del _sl_tp_gave_up_ts[k]
+
+    _monitor_running = False
 
 
 async def _price_monitor_loop(interval_sec: int = 180) -> None:

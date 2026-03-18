@@ -588,9 +588,10 @@ def run_live_trading(max_markets: int = 200) -> None:
             logger.warning("Нет торгуемых рынков")
             return
 
-        # Dedup: проверяем реальные позиции из Data API, не paper storage
+        # Dedup: проверяем реальные позиции из Data API + ОТКРЫТЫЕ ОРДЕРА из CLOB API
         # Data API возвращает conditionId (hex), Gamma API использует числовой id
         # Собираем оба + token_id для надёжного dedup
+        # CRITICAL: pending orders NOT in Data API cause duplicate buys!
         open_condition_ids: set[str] = set()
         open_token_ids: set[str] = set()
         live_exposure_usd: float = 0.0
@@ -615,17 +616,38 @@ def run_live_trading(max_markets: int = 200) -> None:
             logger.warning("Failed to get live positions for dedup, using paper: %s", e)
             open_condition_ids = storage.get_open_market_ids()
 
+        # Also dedup by open (pending) orders — prevents buying same market twice
+        try:
+            open_orders = executor.get_open_orders()
+            for order in open_orders:
+                if isinstance(order, dict):
+                    tid = order.get("asset_id", "") or order.get("token_id", "")
+                else:
+                    tid = getattr(order, "asset_id", "") or getattr(
+                        order, "token_id", ""
+                    )
+                if tid:
+                    open_token_ids.add(tid)
+            logger.info(
+                "Open orders dedup: %d pending orders, total tokenIds: %d",
+                len(open_orders),
+                len(open_token_ids),
+            )
+        except Exception as e:
+            logger.warning("Failed to get open orders for dedup: %s", e)
+
         risk_mgr = RiskManager(
             positions=storage.positions,
             live_exposure_usd=live_exposure_usd,
             live_position_count=live_position_count,
         )
-        # Filter by both Gamma id and conditionId
+        # Filter by Gamma id, conditionId, AND token_ids (catches pending orders)
         to_screen = [
             m
             for m in tradeable
             if m.id not in open_condition_ids
             and m.condition_id not in open_condition_ids
+            and not any(tid in open_token_ids for tid in (m.clob_token_ids or []))
         ]
         interesting = analyzer.batch_screen_markets(to_screen)
 
@@ -701,6 +723,21 @@ def run_live_trading(max_markets: int = 200) -> None:
                     open_token_ids = {
                         p["token_id"] for p in real_positions if p.get("token_id")
                     }
+                except Exception:
+                    pass
+
+                # Also include pending orders in dedup (prevents duplicate buys!)
+                try:
+                    open_orders = executor.get_open_orders()
+                    for order in open_orders:
+                        if isinstance(order, dict):
+                            tid = order.get("asset_id", "") or order.get("token_id", "")
+                        else:
+                            tid = getattr(order, "asset_id", "") or getattr(
+                                order, "token_id", ""
+                            )
+                        if tid:
+                            open_token_ids.add(tid)
                 except Exception:
                     pass
 

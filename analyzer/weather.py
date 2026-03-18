@@ -772,7 +772,26 @@ def scan_weather_markets(
                 "between": 0.844,
             }
 
+            # Strategy: use backtest base rates to inform side selection.
+            # For "exactly"/"between", backtest shows 85-88% NO rate.
+            # Only BUY_YES if model probability SIGNIFICANTLY exceeds backtest YES rate.
+            no_rate = backtest_no_rates.get(info.direction, 0.85)
+            backtest_yes_rate = 1.0 - no_rate
+
             if edge > 0:
+                # Model says YES more likely than market price.
+                # But check: is model_prob actually above the backtest YES rate?
+                # If not, the "edge" is noise — backtest says NO is overwhelmingly likely.
+                if (
+                    info.direction in ("exactly", "between")
+                    and model_prob < backtest_yes_rate + 0.05
+                ):
+                    # Model prob barely above backtest base rate — unreliable, skip
+                    _log(
+                        f"Weather SKIP: {info.city} {info.direction} — "
+                        f"model YES {model_prob:.0%} < backtest YES rate {backtest_yes_rate:.0%}+5%, unreliable"
+                    )
+                    continue
                 side = "BUY_YES"
                 confidence = min(abs(edge) / 0.15, 1.0)
             else:
@@ -787,7 +806,9 @@ def scan_weather_markets(
             if info.direction == "below" and side == "BUY_NO":
                 confidence = min(confidence * 1.15, 1.0)
 
-            no_rate = backtest_no_rates.get(info.direction, 0.85)
+            # Бонус confidence for BUY_NO on high-NO-rate directions
+            if side == "BUY_NO" and no_rate >= 0.85:
+                confidence = min(confidence * 1.1, 1.0)
 
             # Cross-reference с News Service прогнозом
             news_weather_str = ""

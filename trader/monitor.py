@@ -67,8 +67,22 @@ def update_positions(storage: PortfolioStorage) -> None:
                 pos.pnl_pct * 100,
             )
 
+            # Determine SL/TP thresholds (weather vs AI)
+            is_weather = "temperature" in pos.question.lower()
+            if is_weather:
+                tp_pct = settings.weather_take_profit_pct
+                # Cheap weather tokens: no SL, hold to resolution (max loss = $3)
+                sl_pct = (
+                    999.0
+                    if 0 < pos.entry_price < 0.15
+                    else settings.weather_stop_loss_pct
+                )
+            else:
+                tp_pct = settings.take_profit_pct
+                sl_pct = settings.stop_loss_pct
+
             # Take-profit check
-            if pos.pnl_pct >= settings.take_profit_pct:
+            if pos.pnl_pct >= tp_pct:
                 logger.info(
                     "TAKE-PROFIT: %s | PnL: %+.1f%%",
                     pos.question[:40],
@@ -79,7 +93,7 @@ def update_positions(storage: PortfolioStorage) -> None:
                 continue
 
             # Stop-loss check
-            if pos.pnl_pct <= -settings.stop_loss_pct:
+            if pos.pnl_pct <= -sl_pct:
                 logger.warning(
                     "STOP-LOSS: %s | PnL: %+.1f%%", pos.question[:40], pos.pnl_pct * 100
                 )
