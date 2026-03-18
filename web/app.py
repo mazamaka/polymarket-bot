@@ -1180,10 +1180,8 @@ def _live_monitor_check_inner() -> None:
                         e,
                     )
 
-    # Auto-redeem resolved positions (skip worthless ones — value=0 means we lost)
-    redeemable = [
-        p for p in positions if p.get("redeemable") and p.get("current_value", 0) > 0
-    ]
+    # Auto-redeem ALL resolved positions (including losers with value=0 to clean portfolio)
+    redeemable = [p for p in positions if p.get("redeemable")]
     if redeemable:
         try:
             from trader.redeemer import redeem_resolved_positions
@@ -1193,9 +1191,15 @@ def _live_monitor_check_inner() -> None:
                 if r["success"]:
                     from trader.live_history import get_live_history
 
+                    # Find actual PnL from position data
+                    redeem_pnl = 0.0
+                    for p in redeemable:
+                        if p.get("market_id") == r.get("condition_id"):
+                            redeem_pnl = p.get("pnl", 0.0)
+                            break
                     get_live_history().record_redeem(
                         question=r["question"],
-                        pnl=0,
+                        pnl=redeem_pnl,
                         tx_hash=r.get("tx_hash", ""),
                         condition_id=r.get("condition_id", ""),
                     )
