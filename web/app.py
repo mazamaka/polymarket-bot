@@ -154,24 +154,12 @@ def _live_portfolio(balance: float) -> dict:
     """Сформировать portfolio summary для live режима."""
     all_positions = _fetch_live_positions()
 
-    # Separate open vs resolved vs dead positions
-    _MIN_DISPLAY_SHARES = 5.0
+    # Separate open vs resolved positions
     open_positions = [p for p in all_positions if not p.get("resolved")]
     resolved_positions = [p for p in all_positions if p.get("resolved")]
 
-    # Dead positions: resolved with $0 value (lost bets) — count in PnL, hide from UI
-    dead_positions = [p for p in resolved_positions if p.get("current_value", 0) <= 0]
-    dead_pnl = sum(p["pnl"] for p in dead_positions)
-
-    # Tiny positions: < min shares, can't sell — show separately
-    tiny_positions = [
-        p for p in open_positions if p.get("shares", 0) < _MIN_DISPLAY_SHARES
-    ]
-
-    # Active positions for display (exclude tiny)
-    active_positions = [
-        p for p in open_positions if p.get("shares", 0) >= _MIN_DISPLAY_SHARES
-    ]
+    # All positions shown in UI — no filtering
+    active_positions = all_positions
 
     # Open positions: unrealized PnL
     invested = sum(p["size"] for p in open_positions)
@@ -193,7 +181,7 @@ def _live_portfolio(balance: float) -> dict:
     resolved_win_count = sum(1 for p in resolved_positions if p["pnl"] > 0)
     total_closed = len(resolved_positions) + len(closes)
     total_wins = resolved_win_count + history_wins
-    realized_pnl = resolved_pnl + history_pnl + dead_pnl
+    realized_pnl = resolved_pnl + history_pnl
 
     # Total trades = current positions + fully closed (no longer in Data API)
     open_token_ids = {p.get("token_id", "") for p in all_positions}
@@ -219,7 +207,7 @@ def _live_portfolio(balance: float) -> dict:
         "invested_usd": round(invested, 4),
         "total_equity": round(total_equity, 4),
         "roi_pct": round(roi_pct, 2),
-        "open_positions": len(active_positions),
+        "open_positions": len(open_positions),
         "total_trades": total_trades,
         "closed_trades": total_closed,
         "win_count": total_wins,
@@ -228,13 +216,9 @@ def _live_portfolio(balance: float) -> dict:
         "realized_pnl": round(realized_pnl, 4),
         "avg_edge": 0,
         "exposure_pct": exposure_pct,
-        "free_slots": max(0, 35 - len(active_positions)),
+        "free_slots": max(0, 35 - len(open_positions)),
         "max_positions": 35,
         "positions": active_positions,
-        "dead_count": len(dead_positions),
-        "dead_pnl": round(dead_pnl, 4),
-        "tiny_count": len(tiny_positions),
-        "tiny_value": round(sum(p.get("current_value", 0) for p in tiny_positions), 4),
         "mode": "live",
     }
 
