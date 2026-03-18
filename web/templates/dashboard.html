@@ -132,6 +132,20 @@
         .alert-icon { font-size:18px; flex-shrink:0; }
         .alert-text { flex:1; }
         .alert-count { background:rgba(255,255,255,0.1); padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+        .alert-dismiss { background:none; border:none; color:var(--dim); cursor:pointer; font-size:16px; padding:4px 8px; margin-left:auto; opacity:0.5; flex-shrink:0; }
+        .alert-dismiss:hover { opacity:1; color:var(--text); }
+        .alerts-header { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+        .alerts-header .alerts-title { margin-bottom:0; }
+        .alerts-header .alerts-actions { margin-left:auto; display:flex; gap:4px; }
+        .alerts-dismissed-info { font-size:11px; color:var(--dim); margin-left:4px; }
+
+        /* Archive toggle */
+        .archive-toggle { padding:10px 14px; border-top:1px solid var(--border); color:var(--dim); cursor:pointer; font-size:13px; display:flex; align-items:center; gap:6px; }
+        .archive-toggle:hover { color:var(--text); background:rgba(255,255,255,0.02); }
+        .btn-archive { background:rgba(139,148,158,0.1); color:var(--dim); border-color:var(--border); margin-left:4px; }
+        .btn-archive:hover { background:rgba(139,148,158,0.2); color:var(--text); }
+        .btn-restore { background:rgba(88,166,255,0.1); color:var(--blue); border-color:var(--blue); margin-left:4px; }
+        .btn-restore:hover { background:rgba(88,166,255,0.2); }
 
         /* SL/TP progress bar */
         .sltp-bar { height:4px; background:var(--border); border-radius:2px; position:relative; margin-top:4px; width:100px; }
@@ -329,6 +343,11 @@
 <div class="section">
     <div class="sec-head"><span>Открытые позиции</span><span class="right" id="pos-count">{{ summary.open_positions }} active</span></div>
     <div id="positions-body"></div>
+    <div class="archive-toggle" id="archive-toggle" style="display:none">
+        <span id="archive-toggle-text" onclick="toggleArchive()" style="cursor:pointer;flex:1"></span>
+        <button class="btn btn-sm" onclick="event.stopPropagation();clearArchive()" style="margin-left:auto">Очистить архив</button>
+    </div>
+    <div id="archive-body" style="display:none"></div>
 </div>
 
 <!-- Open Orders -->
@@ -586,22 +605,120 @@ function renderSLTPBar(pnlPctRaw, sl, tp) {
     return bar;
 }
 
-function renderPositions(positions) {
-    const body = el('positions-body');
-    body.textContent = '';
-    txt(el('pos-count'), positions.length + ' active');
+function _buildPositionRow(p, now, isArchive) {
+    const tr = ce('tr');
+    if (isArchive) tr.style.opacity = '0.6';
+    const isYes = (p.side||'').includes('YES');
+    const pnlColor = p.pnl >= 0 ? 'green' : 'red';
+    const pnlRaw = p.pnl_pct_raw || 0;
+    const isWeather = isWeatherMarket(p.question);
+    const isExpired = p.end_date && new Date(p.end_date) < now && !p.resolved;
+    const sltp = getSLTP(p.question, p.entry);
+    const isDeepLoss = pnlRaw < -0.50;
+    const isNearTP = isWeather ? pnlRaw > 0.60 : pnlRaw > 0.35;
 
-    positions.sort((a, b) => {
-        const da = a.end_date ? new Date(a.end_date).getTime() : Infinity;
-        const db = b.end_date ? new Date(b.end_date).getTime() : Infinity;
-        return da - db;
-    });
+    // Row highlight
+    if (isNearTP) tr.className = 'pos-row-profit';
+    else if (isDeepLoss) tr.className = 'pos-row-loss';
 
-    if (!positions || !positions.length) {
-        const d = ce('div'); d.className = 'empty'; txt(d, 'Нет открытых позиций — ожидание сигналов...'); body.appendChild(d);
-        return;
+    // Market cell: icon + name + timer
+    const marketTd = ce('td'); marketTd.className = 'col-market';
+    const mcell = ce('div'); mcell.className = 'pos-market-cell';
+    if (p.icon) {
+        const img = ce('img'); img.className = 'pos-icon'; img.src = p.icon; img.alt = '';
+        img.onerror = function() { this.style.display = 'none'; };
+        mcell.appendChild(img);
     }
+    const info = ce('div'); info.className = 'pos-market-info';
+    const nameEl = ce('div'); nameEl.className = 'pos-market-name';
+    if (p.slug) {
+        const a = ce('a'); a.href = 'https://polymarket.com/event/' + p.slug; a.target = '_blank';
+        txt(a, p.question); nameEl.appendChild(a);
+    } else { txt(nameEl, p.question); }
+    info.appendChild(nameEl);
+    if (p.end_date) {
+        const timer = ce('div'); timer.className = 'pos-market-timer';
+        timer.setAttribute('data-end', p.end_date);
+        _updateInlineTimer(timer); info.appendChild(timer);
+    }
+    mcell.appendChild(info); marketTd.appendChild(mcell); tr.appendChild(marketTd);
 
+    // Type badges (outcome + type + expired)
+    const outTd = ce('td');
+    const badge = ce('span'); badge.className = 'badge ' + (isYes ? 'b-yes' : 'b-no');
+    txt(badge, isYes ? 'Yes' : 'No'); outTd.appendChild(badge);
+    outTd.appendChild(document.createTextNode(' '));
+    const typeBadge = ce('span'); typeBadge.className = 'badge ' + (isWeather ? 'b-weather' : 'b-ai');
+    txt(typeBadge, isWeather ? 'Weather' : 'AI'); outTd.appendChild(typeBadge);
+    if (isExpired) {
+        outTd.appendChild(document.createTextNode(' '));
+        const expBadge = ce('span'); expBadge.className = 'badge b-expired'; txt(expBadge, 'Expired'); outTd.appendChild(expBadge);
+    }
+    tr.appendChild(outTd);
+
+    // Avg -> Now price
+    const priceTd = ce('td');
+    const priceDiv = ce('div'); priceDiv.className = 'pos-price-arrow';
+    const fmtPrice = v => v < 0.01 ? v.toFixed(4) : v.toFixed(2);
+    const entryS = ce('span'); txt(entryS, fmtPrice(p.entry));
+    const arrow = ce('span'); arrow.className = 'arrow'; txt(arrow, '\u2192');
+    const curS = ce('span'); curS.className = pnlColor; txt(curS, fmtPrice(p.current));
+    priceDiv.append(entryS, arrow, curS); priceTd.appendChild(priceDiv);
+    // SL/TP bar
+    if (sltp.sl < 999) {
+        priceTd.appendChild(renderSLTPBar(pnlRaw, sltp.sl, sltp.tp));
+    }
+    tr.appendChild(priceTd);
+
+    // Shares
+    const sharesTd = ce('td'); sharesTd.className = 'col-num';
+    txt(sharesTd, String(p.shares || 0)); tr.appendChild(sharesTd);
+
+    // Invested
+    const invTd = ce('td'); invTd.className = 'col-num';
+    txt(invTd, '$' + p.size.toFixed(2)); tr.appendChild(invTd);
+
+    // Current value
+    const valTd = ce('td'); valTd.className = 'col-num';
+    txt(valTd, '$' + (p.current_value != null ? p.current_value.toFixed(3) : '\u2014')); tr.appendChild(valTd);
+
+    // P&L
+    const pnlTd = ce('td'); pnlTd.className = 'col-num pos-pnl-cell';
+    const pnlVal = ce('span'); pnlVal.className = 'pos-pnl-val ' + pnlColor;
+    txt(pnlVal, '$' + (p.pnl>=0?'+':'') + p.pnl.toFixed(2)); pnlTd.appendChild(pnlVal);
+    const pnlPct = ce('span'); pnlPct.className = 'pos-pnl-pct ' + pnlColor;
+    txt(pnlPct, p.pnl_pct); pnlTd.appendChild(pnlPct);
+    tr.appendChild(pnlTd);
+
+    // Action
+    const actTd = ce('td'); actTd.style.cssText = 'white-space:nowrap;';
+    if (p.token_id && p.shares > 0) {
+        const btn = ce('button'); btn.className = 'btn-action btn-sell';
+        txt(btn, 'Sell');
+        btn.onclick = function(e) { e.stopPropagation(); sellPosition(p.token_id, p.shares, p.current, p.question); };
+        actTd.appendChild(btn);
+    }
+    if (p.token_id) {
+        if (isArchive) {
+            const restBtn = ce('button'); restBtn.className = 'btn-action btn-restore';
+            restBtn.title = 'Вернуть из архива';
+            txt(restBtn, '\u21a9');
+            restBtn.onclick = function(e) { e.stopPropagation(); unarchivePosition(p.token_id); };
+            actTd.appendChild(restBtn);
+        } else {
+            const archBtn = ce('button'); archBtn.className = 'btn-action btn-archive';
+            archBtn.title = 'Скрыть в архив';
+            txt(archBtn, '\ud83d\udce6');
+            archBtn.onclick = function(e) { e.stopPropagation(); archivePosition(p.token_id); };
+            actTd.appendChild(archBtn);
+        }
+    }
+    tr.appendChild(actTd);
+
+    return tr;
+}
+
+function _buildPositionTable(positions, now, isArchive) {
     const table = ce('table'); table.className = 'ptable';
     const thead = ce('thead'); const hr = ce('tr');
     [
@@ -616,106 +733,101 @@ function renderPositions(positions) {
     ].forEach(h => { const th = ce('th'); txt(th, h.t); if (h.cls) th.className = h.cls; hr.appendChild(th); });
     thead.appendChild(hr); table.appendChild(thead);
 
-    const now = new Date();
     const tbody = ce('tbody');
-    positions.forEach(p => {
-        const tr = ce('tr');
-        const isYes = (p.side||'').includes('YES');
-        const pnlColor = p.pnl >= 0 ? 'green' : 'red';
-        const pnlRaw = p.pnl_pct_raw || 0;
-        const isWeather = isWeatherMarket(p.question);
-        const isExpired = p.end_date && new Date(p.end_date) < now && !p.resolved;
-        const sltp = getSLTP(p.question, p.entry);
-        const isDeepLoss = pnlRaw < -0.50;
-        const isNearTP = isWeather ? pnlRaw > 0.60 : pnlRaw > 0.35;
-
-        // Row highlight
-        if (isNearTP) tr.className = 'pos-row-profit';
-        else if (isDeepLoss) tr.className = 'pos-row-loss';
-
-        // Market cell: icon + name + timer
-        const marketTd = ce('td'); marketTd.className = 'col-market';
-        const mcell = ce('div'); mcell.className = 'pos-market-cell';
-        if (p.icon) {
-            const img = ce('img'); img.className = 'pos-icon'; img.src = p.icon; img.alt = '';
-            img.onerror = function() { this.style.display = 'none'; };
-            mcell.appendChild(img);
-        }
-        const info = ce('div'); info.className = 'pos-market-info';
-        const nameEl = ce('div'); nameEl.className = 'pos-market-name';
-        if (p.slug) {
-            const a = ce('a'); a.href = 'https://polymarket.com/event/' + p.slug; a.target = '_blank';
-            txt(a, p.question); nameEl.appendChild(a);
-        } else { txt(nameEl, p.question); }
-        info.appendChild(nameEl);
-        if (p.end_date) {
-            const timer = ce('div'); timer.className = 'pos-market-timer';
-            timer.setAttribute('data-end', p.end_date);
-            _updateInlineTimer(timer); info.appendChild(timer);
-        }
-        mcell.appendChild(info); marketTd.appendChild(mcell); tr.appendChild(marketTd);
-
-        // Type badges (outcome + type + expired)
-        const outTd = ce('td');
-        const badge = ce('span'); badge.className = 'badge ' + (isYes ? 'b-yes' : 'b-no');
-        txt(badge, isYes ? 'Yes' : 'No'); outTd.appendChild(badge);
-        outTd.appendChild(document.createTextNode(' '));
-        const typeBadge = ce('span'); typeBadge.className = 'badge ' + (isWeather ? 'b-weather' : 'b-ai');
-        txt(typeBadge, isWeather ? 'Weather' : 'AI'); outTd.appendChild(typeBadge);
-        if (isExpired) {
-            outTd.appendChild(document.createTextNode(' '));
-            const expBadge = ce('span'); expBadge.className = 'badge b-expired'; txt(expBadge, 'Expired'); outTd.appendChild(expBadge);
-        }
-        tr.appendChild(outTd);
-
-        // Avg -> Now price
-        const priceTd = ce('td');
-        const priceDiv = ce('div'); priceDiv.className = 'pos-price-arrow';
-        const fmtPrice = v => v < 0.01 ? v.toFixed(4) : v.toFixed(2);
-        const entryS = ce('span'); txt(entryS, fmtPrice(p.entry));
-        const arrow = ce('span'); arrow.className = 'arrow'; txt(arrow, '\u2192');
-        const curS = ce('span'); curS.className = pnlColor; txt(curS, fmtPrice(p.current));
-        priceDiv.append(entryS, arrow, curS); priceTd.appendChild(priceDiv);
-        // SL/TP bar
-        if (sltp.sl < 999) {
-            priceTd.appendChild(renderSLTPBar(pnlRaw, sltp.sl, sltp.tp));
-        }
-        tr.appendChild(priceTd);
-
-        // Shares
-        const sharesTd = ce('td'); sharesTd.className = 'col-num';
-        txt(sharesTd, String(p.shares || 0)); tr.appendChild(sharesTd);
-
-        // Invested
-        const invTd = ce('td'); invTd.className = 'col-num';
-        txt(invTd, '$' + p.size.toFixed(2)); tr.appendChild(invTd);
-
-        // Current value
-        const valTd = ce('td'); valTd.className = 'col-num';
-        txt(valTd, '$' + (p.current_value != null ? p.current_value.toFixed(3) : '\u2014')); tr.appendChild(valTd);
-
-        // P&L
-        const pnlTd = ce('td'); pnlTd.className = 'col-num pos-pnl-cell';
-        const pnlVal = ce('span'); pnlVal.className = 'pos-pnl-val ' + pnlColor;
-        txt(pnlVal, '$' + (p.pnl>=0?'+':'') + p.pnl.toFixed(2)); pnlTd.appendChild(pnlVal);
-        const pnlPct = ce('span'); pnlPct.className = 'pos-pnl-pct ' + pnlColor;
-        txt(pnlPct, p.pnl_pct); pnlTd.appendChild(pnlPct);
-        tr.appendChild(pnlTd);
-
-        // Action
-        const actTd = ce('td');
-        if (p.token_id && p.shares > 0) {
-            const btn = ce('button'); btn.className = 'btn-action btn-sell';
-            txt(btn, 'Sell');
-            btn.onclick = function(e) { e.stopPropagation(); sellPosition(p.token_id, p.shares, p.current, p.question); };
-            actTd.appendChild(btn);
-        }
-        tr.appendChild(actTd);
-
-        tbody.appendChild(tr);
-    });
+    positions.forEach(p => { tbody.appendChild(_buildPositionRow(p, now, isArchive)); });
     table.appendChild(tbody);
-    body.appendChild(table);
+    return table;
+}
+
+let _archiveOpen = false;
+
+function _getArchivedTokens() {
+    try { return JSON.parse(localStorage.getItem('poly_archived_positions') || '[]'); }
+    catch(e) { return []; }
+}
+function _saveArchivedTokens(arr) {
+    localStorage.setItem('poly_archived_positions', JSON.stringify(arr));
+}
+
+function archivePosition(tokenId) {
+    const arr = _getArchivedTokens();
+    if (!arr.includes(tokenId)) { arr.push(tokenId); _saveArchivedTokens(arr); }
+    renderPositions(_lastPositions || []);
+}
+function unarchivePosition(tokenId) {
+    const arr = _getArchivedTokens().filter(t => t !== tokenId);
+    _saveArchivedTokens(arr);
+    renderPositions(_lastPositions || []);
+}
+function clearArchive() {
+    localStorage.removeItem('poly_archived_positions');
+    renderPositions(_lastPositions || []);
+}
+
+function toggleArchive() {
+    _archiveOpen = !_archiveOpen;
+    el('archive-body').style.display = _archiveOpen ? 'block' : 'none';
+    const count = el('archive-body').querySelectorAll('tbody tr').length;
+    txt(el('archive-toggle-text'), (_archiveOpen ? '\u25BC' : '\u25B6') + ' \ud83d\udce6 Архив (' + count + ')');
+}
+
+let _lastPositions = [];
+
+function renderPositions(positions) {
+    _lastPositions = positions || [];
+    const body = el('positions-body');
+    body.textContent = '';
+    const archiveBody = el('archive-body');
+    archiveBody.textContent = '';
+    const archiveToggle = el('archive-toggle');
+
+    const now = new Date();
+    const archivedTokens = _getArchivedTokens();
+
+    // Sort all positions by end_date
+    _lastPositions.sort((a, b) => {
+        const da = a.end_date ? new Date(a.end_date).getTime() : Infinity;
+        const db = b.end_date ? new Date(b.end_date).getTime() : Infinity;
+        return da - db;
+    });
+
+    // Split: manual archive by token_id (localStorage)
+    const active = [];
+    const archived = [];
+    _lastPositions.forEach(p => {
+        if (archivedTokens.includes(p.token_id)) {
+            archived.push(p);
+        } else {
+            active.push(p);
+        }
+    });
+
+    // Update counter
+    const countText = active.length + ' active' + (archived.length > 0 ? ' \u00b7 ' + archived.length + ' в архиве' : '');
+    txt(el('pos-count'), countText);
+
+    // Render active positions
+    if (!active.length && !archived.length) {
+        const d = ce('div'); d.className = 'empty'; txt(d, 'Нет открытых позиций — ожидание сигналов...'); body.appendChild(d);
+        archiveToggle.style.display = 'none';
+        return;
+    }
+
+    if (active.length) {
+        body.appendChild(_buildPositionTable(active, now));
+    } else {
+        const d = ce('div'); d.className = 'empty'; txt(d, 'Все позиции в архиве'); body.appendChild(d);
+    }
+
+    // Render archived positions (with restore button instead of archive button)
+    if (archived.length > 0) {
+        archiveToggle.style.display = 'flex';
+        txt(el('archive-toggle-text'), (_archiveOpen ? '\u25BC' : '\u25B6') + ' \ud83d\udce6 Архив (' + archived.length + ')');
+        archiveBody.appendChild(_buildPositionTable(archived, now, true));
+        archiveBody.style.display = _archiveOpen ? 'block' : 'none';
+    } else {
+        archiveToggle.style.display = 'none';
+    }
 }
 
 function _updateInlineTimer(el) {
@@ -1174,7 +1286,7 @@ async function loadOpenOrders() {
         const r = await fetch('/api/live-orders');
         const orders = await r.json();
         renderOpenOrders(orders);
-        renderAlerts(initialData, orders);
+        renderAlerts(_lastPortfolio.positions ? _lastPortfolio : initialData, orders);
     } catch (e) {
         // silently fail
     }
@@ -1308,11 +1420,38 @@ async function cancelOrder(orderId) {
 }
 
 // ============ ALERTS ============
+function _getDismissedAlerts() {
+    try { return JSON.parse(localStorage.getItem('poly_dismissed_alerts') || '[]'); }
+    catch (_) { return []; }
+}
+function _saveDismissedAlerts(arr) {
+    localStorage.setItem('poly_dismissed_alerts', JSON.stringify(arr));
+}
+function dismissAlert(alertId) {
+    const dismissed = _getDismissedAlerts();
+    if (!dismissed.includes(alertId)) { dismissed.push(alertId); _saveDismissedAlerts(dismissed); }
+    renderAlerts(_lastPortfolio, _lastOrders);
+}
+function dismissAllAlerts() {
+    const dismissed = _getDismissedAlerts();
+    (_lastAlertIds || []).forEach(id => { if (!dismissed.includes(id)) dismissed.push(id); });
+    _saveDismissedAlerts(dismissed);
+    renderAlerts(_lastPortfolio, _lastOrders);
+}
+function resetDismissedAlerts() {
+    localStorage.removeItem('poly_dismissed_alerts');
+    renderAlerts(_lastPortfolio, _lastOrders);
+}
+
+let _lastPortfolio = {};
+let _lastAlertIds = [];
+
 function renderAlerts(portfolio, orders) {
     const container = el('alerts-container');
     if (!container) return;
     container.textContent = '';
-    const alerts = [];
+    _lastPortfolio = portfolio;
+    const allAlerts = [];
     const positions = portfolio.positions || [];
     const now = new Date();
 
@@ -1323,9 +1462,10 @@ function renderAlerts(portfolio, orders) {
         const remainSize = parseFloat(o.size_matched || 0);
         const filled = origSize > 0 ? Math.round(remainSize / origSize * 100) : 0;
         if (isSell && filled === 0) {
+            const oid = o.id || o.order_id || 'unknown';
             const createdTs = o.created_at || o.timestamp;
             const ago = createdTs ? _timeAgo(createdTs) : '';
-            alerts.push({icon:'\u26a0\ufe0f', text:'Ордер на продажу не исполнен' + (ago ? ' (висит ' + ago + ')' : ''), cls:'alert-warn'});
+            allAlerts.push({id:'unfilled:' + oid, icon:'\u26a0\ufe0f', text:'Ордер на продажу не исполнен' + (ago ? ' (висит ' + ago + ')' : ''), cls:'alert-warn'});
         }
     });
 
@@ -1333,13 +1473,13 @@ function renderAlerts(portfolio, orders) {
     const expiredPositions = positions.filter(p => p.end_date && new Date(p.end_date) < now && !p.resolved);
     expiredPositions.forEach(p => {
         const endStr = new Date(p.end_date).toLocaleDateString('ru', {day:'numeric', month:'short'});
-        alerts.push({icon:'\u23f0', text:'Позиция просрочена: ' + (p.question||'').slice(0,60) + ' (закончилась ' + endStr + ')', cls:'alert-danger'});
+        allAlerts.push({id:'expired:' + (p.token_id || p.market_id || ''), icon:'\u23f0', text:'Позиция просрочена: ' + (p.question||'').slice(0,60) + ' (закончилась ' + endStr + ')', cls:'alert-danger'});
     });
 
     // (c) Deep losses (>50%)
     positions.forEach(p => {
         if ((p.pnl_pct_raw || 0) < -0.50) {
-            alerts.push({icon:'\ud83d\udcc9', text:'Глубокий убыток: ' + (p.question||'').slice(0,50) + ' (' + p.pnl_pct + ')', cls:'alert-danger'});
+            allAlerts.push({id:'deep_loss:' + (p.token_id || p.market_id || ''), icon:'\ud83d\udcc9', text:'Глубокий убыток: ' + (p.question||'').slice(0,50) + ' (' + p.pnl_pct + ')', cls:'alert-danger'});
         }
     });
 
@@ -1348,25 +1488,25 @@ function renderAlerts(portfolio, orders) {
         const raw = p.pnl_pct_raw || 0;
         const isW = isWeatherMarket(p.question);
         if ((isW && raw > 0.60) || (!isW && raw > 0.35)) {
-            alerts.push({icon:'\ud83c\udfaf', text:'Близко к Take-Profit: ' + (p.question||'').slice(0,50) + ' (' + p.pnl_pct + ')', cls:'alert-success'});
+            allAlerts.push({id:'near_tp:' + (p.token_id || p.market_id || ''), icon:'\ud83c\udfaf', text:'Близко к Take-Profit: ' + (p.question||'').slice(0,50) + ' (' + p.pnl_pct + ')', cls:'alert-success'});
         }
     });
 
     // (e) Low balance
     if (portfolio.balance_usd < 5) {
-        alerts.push({icon:'\ud83d\udcb0', text:'Низкий баланс: $' + portfolio.balance_usd.toFixed(2) + '. Пополните или закройте позиции', cls:'alert-danger'});
+        allAlerts.push({id:'low_balance:global', icon:'\ud83d\udcb0', text:'Низкий баланс: $' + portfolio.balance_usd.toFixed(2) + '. Пополните или закройте позиции', cls:'alert-danger'});
     }
 
     // (f) High exposure
     if ((portfolio.exposure_pct || 0) > 80) {
-        alerts.push({icon:'\u26a1', text:'Высокая загрузка: ' + portfolio.exposure_pct + '% капитала в сделках', cls:'alert-warn'});
+        allAlerts.push({id:'high_exposure:global', icon:'\u26a1', text:'Высокая загрузка: ' + portfolio.exposure_pct + '% капитала в сделках', cls:'alert-warn'});
     }
 
     // (g) Redeemable positions
     const redeemable = positions.filter(p => p.resolved && p.redeemable);
     if (redeemable.length > 0) {
         const hasValue = redeemable.some(p => (p.current_value || 0) > 0);
-        alerts.push({icon:'\u2705', text:'Можно забрать: ' + redeemable.length + ' завершённых позиций', cls: hasValue ? 'alert-success' : 'alert-dim', count: redeemable.length});
+        allAlerts.push({id:'redeemable:global', icon:'\u2705', text:'Можно забрать: ' + redeemable.length + ' завершённых позиций', cls: hasValue ? 'alert-success' : 'alert-dim', count: redeemable.length});
     }
 
     // (h) Duplicate markets
@@ -1376,19 +1516,56 @@ function renderAlerts(portfolio, orders) {
     });
     Object.values(marketCounts).forEach(mc => {
         if (mc.count > 1) {
-            alerts.push({icon:'\ud83d\udd04', text:'Дублирующая сделка: ' + mc.q.slice(0,50) + ' \u2014 куплена ' + mc.count + ' раз', cls:'alert-warn'});
+            allAlerts.push({id:'duplicate:' + mc.q.slice(0,30), icon:'\ud83d\udd04', text:'Дублирующая сделка: ' + mc.q.slice(0,50) + ' \u2014 куплена ' + mc.count + ' раз', cls:'alert-warn'});
         }
     });
 
-    if (alerts.length === 0) { container.style.display = 'none'; return; }
+    // Store all alert IDs for "dismiss all"
+    _lastAlertIds = allAlerts.map(a => a.id);
+
+    if (allAlerts.length === 0) { container.style.display = 'none'; return; }
+
+    // Filter dismissed
+    const dismissed = _getDismissedAlerts();
+    const visibleAlerts = allAlerts.filter(a => !dismissed.includes(a.id));
+    const dismissedCount = allAlerts.length - visibleAlerts.length;
+
+    if (visibleAlerts.length === 0 && dismissedCount === 0) { container.style.display = 'none'; return; }
 
     container.style.display = 'block';
-    const title = ce('div'); title.className = 'alerts-title'; txt(title, 'Оповещения (' + alerts.length + ')'); container.appendChild(title);
-    alerts.forEach(a => {
+
+    // Header with title + actions
+    const header = ce('div'); header.className = 'alerts-header';
+    const title = ce('div'); title.className = 'alerts-title';
+    let titleText = 'Оповещения (' + visibleAlerts.length + ')';
+    if (dismissedCount > 0) titleText += ' ';
+    txt(title, titleText);
+    if (dismissedCount > 0) {
+        const dimSpan = ce('span'); dimSpan.className = 'alerts-dismissed-info';
+        txt(dimSpan, '(' + dismissedCount + ' скрыто)'); title.appendChild(dimSpan);
+    }
+    header.appendChild(title);
+
+    const actions = ce('div'); actions.className = 'alerts-actions';
+    if (visibleAlerts.length > 0) {
+        const hideAllBtn = ce('button'); hideAllBtn.className = 'btn btn-sm';
+        txt(hideAllBtn, 'Скрыть все'); hideAllBtn.onclick = dismissAllAlerts; actions.appendChild(hideAllBtn);
+    }
+    if (dismissedCount > 0) {
+        const resetBtn = ce('button'); resetBtn.className = 'btn btn-sm';
+        txt(resetBtn, 'Сбросить'); resetBtn.onclick = resetDismissedAlerts; actions.appendChild(resetBtn);
+    }
+    header.appendChild(actions);
+    container.appendChild(header);
+
+    visibleAlerts.forEach(a => {
         const card = ce('div'); card.className = 'alert-card ' + a.cls;
         const icon = ce('span'); icon.className = 'alert-icon'; txt(icon, a.icon); card.appendChild(icon);
         const text = ce('span'); text.className = 'alert-text'; txt(text, a.text); card.appendChild(text);
         if (a.count) { const cnt = ce('span'); cnt.className = 'alert-count'; txt(cnt, String(a.count)); card.appendChild(cnt); }
+        const dismissBtn = ce('button'); dismissBtn.className = 'alert-dismiss'; txt(dismissBtn, '\u2715');
+        dismissBtn.onclick = function(e) { e.stopPropagation(); dismissAlert(a.id); };
+        card.appendChild(dismissBtn);
         container.appendChild(card);
     });
 }
