@@ -215,6 +215,25 @@ class LiveExecutor:
         logger.info("SELL order posted: %s", result)
         return result
 
+    def get_best_bid(self, token_id: str) -> float:
+        """Get best bid price from orderbook (highest price someone will buy at)."""
+        ob = self.get_orderbook(token_id)
+        if not ob:
+            return 0.0
+        bids = ob.get("bids", [])
+        if not bids:
+            return 0.0
+        best = 0.0
+        for b in bids:
+            p = (
+                float(b.get("price", 0))
+                if isinstance(b, dict)
+                else float(getattr(b, "price", 0))
+            )
+            if p > best:
+                best = p
+        return best
+
     def get_orderbook(self, token_id: str) -> dict | None:
         """Получить стакан. Возвращает dict с bids/asks."""
         try:
