@@ -1039,10 +1039,16 @@ def _live_monitor_check_inner() -> None:
             best_bid = executor.get_best_bid(token_id)
             if best_bid > 0:
                 sell_price = max(0.001, min(0.999, round(best_bid * 0.98, 4)))
-            elif cur_price > 0:
+            elif cur_price >= 0.01:
                 sell_price = max(0.001, min(0.999, round(cur_price * 0.90, 4)))
             else:
-                logger.error("No price data for %s — skipping SL sell", question)
+                # No buyers and price near zero — unsellable, give up
+                logger.warning(
+                    "SL SKIP %s — no bids and cur_price=%.4f", question, cur_price
+                )
+                _sl_tp_triggered.add(token_id)
+                _save_sl_tp_triggered(_sl_tp_triggered)
+                _sl_tp_gave_up_ts[token_id] = time.monotonic()
                 continue
             logger.warning(
                 "STOP-LOSS: %s | PnL: %.1f%% | Selling %.2f shares @ %.4f (bid=%.4f)",
@@ -1054,29 +1060,36 @@ def _live_monitor_check_inner() -> None:
             )
             try:
                 result = executor.execute_sell_order(token_id, sell_price, shares)
-                # Only mark as triggered if order was immediately matched
                 order_status = ""
                 if isinstance(result, dict):
                     order_status = result.get("status", "")
                 if order_status == "matched":
                     _sl_tp_triggered.add(token_id)
                     _save_sl_tp_triggered(_sl_tp_triggered)
-                    _record_live_trade(
-                        pos,
-                        sell_price,
-                        pnl_pct,
-                        "stop-loss",
-                    )
+                    _record_live_trade(pos, sell_price, pnl_pct, "stop-loss")
                     sync_broadcast(
                         "log",
                         f"STOP-LOSS: {question} | PnL: {pnl_pct * 100:+.1f}% | Sell @ {sell_price}",
                     )
                 else:
-                    logger.warning(
-                        "SL sell order NOT matched (status=%s) for %s — will retry next cycle",
-                        order_status,
-                        question,
-                    )
+                    # Not matched — count as retry
+                    _sl_tp_retries[token_id] = _sl_tp_retries.get(token_id, 0) + 1
+                    if _sl_tp_retries[token_id] >= _SL_MAX_RETRIES:
+                        _sl_tp_triggered.add(token_id)
+                        _save_sl_tp_triggered(_sl_tp_triggered)
+                        _sl_tp_gave_up_ts[token_id] = time.monotonic()
+                        logger.warning(
+                            "SL GAVE UP after %d unmatched retries for %s",
+                            _SL_MAX_RETRIES,
+                            question,
+                        )
+                    else:
+                        logger.warning(
+                            "SL sell NOT matched (%d/%d) for %s — will retry",
+                            _sl_tp_retries[token_id],
+                            _SL_MAX_RETRIES,
+                            question,
+                        )
             except Exception as e:
                 _sl_tp_retries[token_id] = _sl_tp_retries.get(token_id, 0) + 1
                 if _sl_tp_retries[token_id] >= _SL_MAX_RETRIES:
@@ -1105,10 +1118,15 @@ def _live_monitor_check_inner() -> None:
             best_bid = executor.get_best_bid(token_id)
             if best_bid > 0:
                 sell_price = max(0.001, min(0.999, round(best_bid * 0.995, 4)))
-            elif cur_price > 0:
+            elif cur_price >= 0.01:
                 sell_price = max(0.001, min(0.999, round(cur_price * 0.95, 4)))
             else:
-                logger.error("No price data for %s — skipping TP sell", question)
+                logger.warning(
+                    "TP SKIP %s — no bids and cur_price=%.4f", question, cur_price
+                )
+                _sl_tp_triggered.add(token_id)
+                _save_sl_tp_triggered(_sl_tp_triggered)
+                _sl_tp_gave_up_ts[token_id] = time.monotonic()
                 continue
             logger.info(
                 "TAKE-PROFIT: %s | PnL: %.1f%% | Selling %.2f shares @ %.4f (bid=%.4f)",
@@ -1120,29 +1138,35 @@ def _live_monitor_check_inner() -> None:
             )
             try:
                 result = executor.execute_sell_order(token_id, sell_price, shares)
-                # Only mark as triggered if order was immediately matched
                 order_status = ""
                 if isinstance(result, dict):
                     order_status = result.get("status", "")
                 if order_status == "matched":
                     _sl_tp_triggered.add(token_id)
                     _save_sl_tp_triggered(_sl_tp_triggered)
-                    _record_live_trade(
-                        pos,
-                        sell_price,
-                        pnl_pct,
-                        "take-profit",
-                    )
+                    _record_live_trade(pos, sell_price, pnl_pct, "take-profit")
                     sync_broadcast(
                         "log",
                         f"TAKE-PROFIT: {question} | PnL: {pnl_pct * 100:+.1f}% | Sell @ {sell_price}",
                     )
                 else:
-                    logger.warning(
-                        "TP sell order NOT matched (status=%s) for %s — will retry next cycle",
-                        order_status,
-                        question,
-                    )
+                    _sl_tp_retries[token_id] = _sl_tp_retries.get(token_id, 0) + 1
+                    if _sl_tp_retries[token_id] >= _SL_MAX_RETRIES:
+                        _sl_tp_triggered.add(token_id)
+                        _save_sl_tp_triggered(_sl_tp_triggered)
+                        _sl_tp_gave_up_ts[token_id] = time.monotonic()
+                        logger.warning(
+                            "TP GAVE UP after %d unmatched retries for %s",
+                            _SL_MAX_RETRIES,
+                            question,
+                        )
+                    else:
+                        logger.warning(
+                            "TP sell NOT matched (%d/%d) for %s — will retry",
+                            _sl_tp_retries[token_id],
+                            _SL_MAX_RETRIES,
+                            question,
+                        )
             except Exception as e:
                 _sl_tp_retries[token_id] = _sl_tp_retries.get(token_id, 0) + 1
                 if _sl_tp_retries[token_id] >= _SL_MAX_RETRIES:
