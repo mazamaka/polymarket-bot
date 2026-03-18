@@ -120,13 +120,51 @@
         .modal-content input { width:100%;padding:8px;margin:8px 0;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:13px; }
         .modal-actions { display:flex;gap:8px;margin-top:12px; }
 
-        @media (max-width:768px) { body{padding:8px;} .stats{grid-template-columns:repeat(3,1fr);} .ptable { font-size:11px; } .pos-market-name { max-width:180px; } }
+        /* Alerts */
+        .alerts { margin-bottom:16px; }
+        .alerts-title { font-size:13px; font-weight:600; margin-bottom:8px; color:var(--dim); }
+        .alert-card { display:flex; align-items:center; gap:10px; padding:10px 14px; border-radius:8px; margin-bottom:6px; font-size:13px; border-left:4px solid; }
+        .alert-warn { background:rgba(210,153,34,0.08); border-left-color:var(--yellow); }
+        .alert-danger { background:rgba(248,81,73,0.08); border-left-color:var(--red); }
+        .alert-success { background:rgba(63,185,80,0.08); border-left-color:var(--green); }
+        .alert-info { background:rgba(88,166,255,0.08); border-left-color:var(--blue); }
+        .alert-dim { background:rgba(139,148,158,0.06); border-left-color:var(--dim); }
+        .alert-icon { font-size:18px; flex-shrink:0; }
+        .alert-text { flex:1; }
+        .alert-count { background:rgba(255,255,255,0.1); padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+
+        /* SL/TP progress bar */
+        .sltp-bar { height:4px; background:var(--border); border-radius:2px; position:relative; margin-top:4px; width:100px; }
+        .sltp-fill-loss { height:100%; border-radius:2px 0 0 2px; position:absolute; left:0; top:0; background:rgba(248,81,73,0.3); }
+        .sltp-fill-profit { height:100%; border-radius:0 2px 2px 0; position:absolute; right:0; top:0; background:rgba(63,185,80,0.3); }
+        .sltp-marker { width:3px; height:10px; background:var(--text); position:absolute; top:-3px; border-radius:1px; z-index:1; }
+
+        /* Position row highlights */
+        .pos-row-profit { background:rgba(63,185,80,0.05); }
+        .pos-row-loss { background:rgba(248,81,73,0.05); }
+        .pos-row-profit:hover { background:rgba(63,185,80,0.08) !important; }
+        .pos-row-loss:hover { background:rgba(248,81,73,0.08) !important; }
+
+        /* Type badges */
+        .b-weather { background:rgba(210,153,34,0.12); color:var(--yellow); }
+        .b-ai { background:rgba(188,140,255,0.12); color:var(--purple); }
+        .b-expired { background:rgba(248,81,73,0.2); color:var(--red); }
+        .b-sl { background:rgba(248,81,73,0.15); color:var(--red); }
+        .b-tp { background:rgba(63,185,80,0.15); color:var(--green); }
+        .b-redeem { background:rgba(188,140,255,0.15); color:var(--purple); }
+        .b-notfilled { background:rgba(248,81,73,0.15); color:var(--red); font-size:10px; }
+
+        /* Live badge */
+        .live-badge { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600; color:var(--green); background:rgba(63,185,80,0.1); margin-left:8px; vertical-align:middle; }
+        .live-badge .live-dot { width:6px; height:6px; border-radius:50%; background:var(--green); animation:pulse 1.5s infinite; }
+
+        @media (max-width:768px) { body{padding:8px;} .stats{grid-template-columns:repeat(3,1fr);} .ptable { font-size:11px; } .pos-market-name { max-width:180px; } .sltp-bar { width:60px; } }
     </style>
 </head>
 <body>
 
 <div class="header">
-    <h1><span>Polymarket</span> AI Bot</h1>
+    <h1><span>Polymarket</span> AI Bot <span class="live-badge" id="live-badge" style="display:none"><span class="live-dot"></span>LIVE</span></h1>
     <div class="controls">
         <button class="btn" onclick="runMonitor()" id="btn-mon">Update Prices</button>
         <button class="btn btn-go" onclick="runPaper()" id="btn-paper">Run Trading</button>
@@ -157,8 +195,8 @@
 <!-- Settings Panel -->
 <div class="settings-panel" id="settings-panel">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-        <span style="font-weight:600;font-size:14px;">⚙ Trading Settings</span>
-        <span style="font-size:11px;color:var(--dim);">Changes apply to the next trading run</span>
+        <span style="font-weight:600;font-size:14px;">Настройки</span>
+        <span style="font-size:11px;color:var(--dim);">Изменения применяются при следующем запуске</span>
     </div>
     <div class="settings-grid">
         <div class="setting-item">
@@ -232,26 +270,29 @@
 
 <!-- Stats -->
 <div class="stats" id="stats-grid">
-    <div class="stat"><div class="stat-label">Total Equity</div><div class="stat-val" id="s-equity">${{ "%.2f"|format(summary.total_equity) }}</div><div class="stat-sub" id="s-roi">ROI: {{ "%+.1f"|format(summary.roi_pct) }}%</div></div>
-    <div class="stat"><div class="stat-label">Balance</div><div class="stat-val" id="s-balance">${{ "%.2f"|format(summary.balance_usd) }}</div><div class="stat-sub">Available</div></div>
-    <div class="stat"><div class="stat-label">Invested</div><div class="stat-val blue" id="s-invested">${{ "%.2f"|format(summary.invested_usd) }}</div><div class="stat-sub" id="s-open-count">{{ summary.open_positions }} pos | {{ summary.get('exposure_pct', 0) }}% exp</div></div>
-    <div class="stat"><div class="stat-label">Unrealized</div><div class="stat-val" id="s-upnl">${{ "%+.2f"|format(summary.unrealized_pnl) }}</div><div class="stat-sub">Open P&L</div></div>
-    <div class="stat"><div class="stat-label">Realized</div><div class="stat-val" id="s-rpnl">${{ "%+.2f"|format(summary.realized_pnl) }}</div><div class="stat-sub" id="s-closed-count">{{ summary.closed_trades }} closed</div></div>
-    <div class="stat"><div class="stat-label">Win Rate</div><div class="stat-val" id="s-winrate">{{ summary.win_rate }}%</div><div class="stat-sub" id="s-wins">{{ summary.win_count }}/{{ summary.closed_trades }}</div></div>
-    <div class="stat"><div class="stat-label">Avg Edge</div><div class="stat-val blue" id="s-edge">{{ summary.avg_edge }}%</div><div class="stat-sub">On entry</div></div>
-    <div class="stat"><div class="stat-label">Slots</div><div class="stat-val" id="s-slots">{{ summary.get('free_slots', 0) }}</div><div class="stat-sub" id="s-slots-sub">{{ summary.total_trades }} total trades</div></div>
+    <div class="stat"><div class="stat-label">Общий капитал</div><div class="stat-val" id="s-equity">${{ "%.2f"|format(summary.total_equity) }}</div><div class="stat-sub" id="s-roi">ROI: {{ "%+.1f"|format(summary.roi_pct) }}%</div></div>
+    <div class="stat"><div class="stat-label">Свободно</div><div class="stat-val" id="s-balance">${{ "%.2f"|format(summary.balance_usd) }}</div><div class="stat-sub">Доступно для торговли</div></div>
+    <div class="stat"><div class="stat-label">В сделках</div><div class="stat-val blue" id="s-invested">${{ "%.2f"|format(summary.invested_usd) }}</div><div class="stat-sub" id="s-open-count">{{ summary.open_positions }} поз | {{ summary.get('exposure_pct', 0) }}% загрузка</div></div>
+    <div class="stat"><div class="stat-label">Плавающий P&L</div><div class="stat-val" id="s-upnl">${{ "%+.2f"|format(summary.unrealized_pnl) }}</div><div class="stat-sub">Нереализованная прибыль/убыток</div></div>
+    <div class="stat"><div class="stat-label">Закрытый P&L</div><div class="stat-val" id="s-rpnl">${{ "%+.2f"|format(summary.realized_pnl) }}</div><div class="stat-sub" id="s-closed-count">{{ summary.closed_trades }} закрыто</div></div>
+    <div class="stat"><div class="stat-label">Винрейт</div><div class="stat-val" id="s-winrate">{{ summary.win_rate }}%</div><div class="stat-sub" id="s-wins">{{ summary.win_count }} из {{ summary.closed_trades }} в плюсе</div></div>
+    <div class="stat"><div class="stat-label">Режим</div><div class="stat-val blue" id="s-mode">{{ summary.get('mode', 'live') | upper }}</div><div class="stat-sub" id="s-mode-sub">Live / Paper</div></div>
+    <div class="stat"><div class="stat-label">Слоты</div><div class="stat-val" id="s-slots">{{ summary.get('free_slots', 0) }}</div><div class="stat-sub" id="s-slots-sub">{{ summary.get('free_slots', 0) }} свободных из {{ summary.get('max_positions', 35) }}</div></div>
 </div>
+
+<!-- Alerts -->
+<div class="alerts" id="alerts-container" style="display:none;"></div>
 
 <!-- Equity Chart -->
 <div class="chart-wrap">
-    <div class="chart-title">Equity Curve</div>
+    <div class="chart-title">Кривая капитала</div>
     <canvas id="equity-chart"></canvas>
 </div>
 
 <!-- Analytics -->
 <div class="section" id="analytics-section">
     <div class="sec-head" style="cursor:pointer;" onclick="toggleAnalytics()">
-        <span>Analytics</span>
+        <span>Аналитика</span>
         <span class="right" id="analytics-toggle">&#9654; Show</span>
     </div>
     <div id="analytics-body" style="display:none;">
@@ -286,20 +327,20 @@
 
 <!-- Positions -->
 <div class="section">
-    <div class="sec-head"><span>Open Positions</span><span class="right" id="pos-count">{{ summary.open_positions }} active</span></div>
+    <div class="sec-head"><span>Открытые позиции</span><span class="right" id="pos-count">{{ summary.open_positions }} active</span></div>
     <div id="positions-body"></div>
 </div>
 
 <!-- Open Orders -->
 <div class="section" id="orders-section">
-    <div class="sec-head"><span>Open Orders</span><span class="right" id="orders-count">0 orders</span></div>
+    <div class="sec-head"><span>Открытые ордера</span><span class="right" id="orders-count">0 orders</span></div>
     <div id="orders-body"><div class="empty">No open orders</div></div>
 </div>
 
 <!-- Trade History -->
 <div class="section">
     <div class="sec-head">
-        <span>Trade History</span>
+        <span>История сделок</span>
         <div style="display:flex;gap:8px;align-items:center;">
             <select id="hist-limit" onchange="applyHistoryFilter()" style="background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:11px;">
                 <option value="20">Last 20</option>
@@ -321,7 +362,7 @@
 
 <!-- Log -->
 <div class="section">
-    <div class="sec-head"><span>Live Activity</span><button class="btn btn-sm" onclick="clearLog()">Clear</button></div>
+    <div class="sec-head"><span>Активность</span><button class="btn btn-sm" onclick="clearLog()">Clear</button></div>
     <div class="log" id="live-log"></div>
 </div>
 
@@ -515,6 +556,36 @@ function drawEquity(curve) {
 })();
 
 // ============ POSITIONS ============
+function isWeatherMarket(question) { return (question || '').toLowerCase().indexOf('temperature') >= 0; }
+
+function getSLTP(question, entry) {
+    const isWeather = isWeatherMarket(question);
+    const isCheap = entry < 0.15;
+    if (isWeather) return { sl: isCheap ? 999 : 50, tp: 80 };
+    return { sl: 40, tp: 50 };
+}
+
+function renderSLTPBar(pnlPctRaw, sl, tp) {
+    // pnlPctRaw: 1.415 means +141.5%, -0.5 means -50%
+    const bar = ce('div'); bar.className = 'sltp-bar';
+    // Total range: -SL to +TP (in fraction)
+    const slFrac = sl / 100; // e.g. 0.5
+    const tpFrac = tp / 100; // e.g. 0.8
+    const totalRange = slFrac + tpFrac;
+    // SL zone (left part)
+    const slZone = ce('div'); slZone.className = 'sltp-fill-loss';
+    slZone.style.width = (slFrac / totalRange * 100) + '%'; bar.appendChild(slZone);
+    // TP zone (right part)
+    const tpZone = ce('div'); tpZone.className = 'sltp-fill-profit';
+    tpZone.style.width = (tpFrac / totalRange * 100) + '%'; bar.appendChild(tpZone);
+    // Marker position: map pnlPctRaw from [-slFrac, tpFrac] to [0%, 100%]
+    const clamped = Math.max(-slFrac, Math.min(tpFrac, pnlPctRaw));
+    const pct = (clamped + slFrac) / totalRange * 100;
+    const marker = ce('div'); marker.className = 'sltp-marker';
+    marker.style.left = 'calc(' + pct + '% - 1px)'; bar.appendChild(marker);
+    return bar;
+}
+
 function renderPositions(positions) {
     const body = el('positions-body');
     body.textContent = '';
@@ -527,29 +598,40 @@ function renderPositions(positions) {
     });
 
     if (!positions || !positions.length) {
-        const d = ce('div'); d.className = 'empty'; txt(d, 'No open positions — waiting for signals...'); body.appendChild(d);
+        const d = ce('div'); d.className = 'empty'; txt(d, 'Нет открытых позиций — ожидание сигналов...'); body.appendChild(d);
         return;
     }
 
     const table = ce('table'); table.className = 'ptable';
     const thead = ce('thead'); const hr = ce('tr');
     [
-        {t:'Market', cls:'col-market'},
-        {t:'Outcome'},
+        {t:'Рынок', cls:'col-market'},
+        {t:'Тип'},
         {t:'Avg \u2192 Now'},
         {t:'Shares', cls:'col-num'},
-        {t:'Invested', cls:'col-num'},
-        {t:'Value', cls:'col-num'},
+        {t:'Вложено', cls:'col-num'},
+        {t:'Стоимость', cls:'col-num'},
         {t:'P&L', cls:'col-num'},
         {t:''},
     ].forEach(h => { const th = ce('th'); txt(th, h.t); if (h.cls) th.className = h.cls; hr.appendChild(th); });
     thead.appendChild(hr); table.appendChild(thead);
 
+    const now = new Date();
     const tbody = ce('tbody');
     positions.forEach(p => {
         const tr = ce('tr');
         const isYes = (p.side||'').includes('YES');
         const pnlColor = p.pnl >= 0 ? 'green' : 'red';
+        const pnlRaw = p.pnl_pct_raw || 0;
+        const isWeather = isWeatherMarket(p.question);
+        const isExpired = p.end_date && new Date(p.end_date) < now && !p.resolved;
+        const sltp = getSLTP(p.question, p.entry);
+        const isDeepLoss = pnlRaw < -0.50;
+        const isNearTP = isWeather ? pnlRaw > 0.60 : pnlRaw > 0.35;
+
+        // Row highlight
+        if (isNearTP) tr.className = 'pos-row-profit';
+        else if (isDeepLoss) tr.className = 'pos-row-loss';
 
         // Market cell: icon + name + timer
         const marketTd = ce('td'); marketTd.className = 'col-market';
@@ -573,10 +655,18 @@ function renderPositions(positions) {
         }
         mcell.appendChild(info); marketTd.appendChild(mcell); tr.appendChild(marketTd);
 
-        // Outcome badge
+        // Type badges (outcome + type + expired)
         const outTd = ce('td');
         const badge = ce('span'); badge.className = 'badge ' + (isYes ? 'b-yes' : 'b-no');
-        txt(badge, isYes ? 'Yes' : 'No'); outTd.appendChild(badge); tr.appendChild(outTd);
+        txt(badge, isYes ? 'Yes' : 'No'); outTd.appendChild(badge);
+        outTd.appendChild(document.createTextNode(' '));
+        const typeBadge = ce('span'); typeBadge.className = 'badge ' + (isWeather ? 'b-weather' : 'b-ai');
+        txt(typeBadge, isWeather ? 'Weather' : 'AI'); outTd.appendChild(typeBadge);
+        if (isExpired) {
+            outTd.appendChild(document.createTextNode(' '));
+            const expBadge = ce('span'); expBadge.className = 'badge b-expired'; txt(expBadge, 'Expired'); outTd.appendChild(expBadge);
+        }
+        tr.appendChild(outTd);
 
         // Avg -> Now price
         const priceTd = ce('td');
@@ -585,7 +675,12 @@ function renderPositions(positions) {
         const entryS = ce('span'); txt(entryS, fmtPrice(p.entry));
         const arrow = ce('span'); arrow.className = 'arrow'; txt(arrow, '\u2192');
         const curS = ce('span'); curS.className = pnlColor; txt(curS, fmtPrice(p.current));
-        priceDiv.append(entryS, arrow, curS); priceTd.appendChild(priceDiv); tr.appendChild(priceTd);
+        priceDiv.append(entryS, arrow, curS); priceTd.appendChild(priceDiv);
+        // SL/TP bar
+        if (sltp.sl < 999) {
+            priceTd.appendChild(renderSLTPBar(pnlRaw, sltp.sl, sltp.tp));
+        }
+        tr.appendChild(priceTd);
 
         // Shares
         const sharesTd = ce('td'); sharesTd.className = 'col-num';
@@ -597,7 +692,7 @@ function renderPositions(positions) {
 
         // Current value
         const valTd = ce('td'); valTd.className = 'col-num';
-        txt(valTd, '$' + (p.current_value != null ? p.current_value.toFixed(3) : '—')); tr.appendChild(valTd);
+        txt(valTd, '$' + (p.current_value != null ? p.current_value.toFixed(3) : '\u2014')); tr.appendChild(valTd);
 
         // P&L
         const pnlTd = ce('td'); pnlTd.className = 'col-num pos-pnl-cell';
@@ -664,12 +759,12 @@ function renderHistory(history, totalCount) {
     txt(el('hist-count'), history.length + ' / ' + totalCount + ' entries');
 
     if (!history || !history.length) {
-        const d = ce('div'); d.className = 'empty'; txt(d, 'No trades yet'); body.appendChild(d); return;
+        const d = ce('div'); d.className = 'empty'; txt(d, 'Сделок пока нет'); body.appendChild(d); return;
     }
 
     const table = ce('table');
     const thead = ce('thead'); const hr = ce('tr');
-    ['Time','Action','Market','Side','Price','Size','Edge','P&L','Balance'].forEach(h => { const th = ce('th'); txt(th,h); hr.appendChild(th); });
+    ['Время','Действие','Рынок','Сторона','Цена','Размер','Edge','P&L','Результат','Баланс'].forEach(h => { const th = ce('th'); txt(th,h); hr.appendChild(th); });
     thead.appendChild(hr); table.appendChild(thead);
 
     const tbody = ce('tbody');
@@ -680,11 +775,13 @@ function renderHistory(history, totalCount) {
         const isRedeem = h.action === 'REDEEM';
         const isYes = (h.side||'').includes('YES');
 
-        // Action badge
+        // Action badge with reason-specific styling
         let actionLabel = h.action;
         let actionClass = isOpen ? 'b-open' : 'b-close';
-        if (isRedeem) { actionLabel = 'REDEEM'; actionClass = 'b-close'; }
-        if (isClose && h.reason) { actionLabel = h.reason.toUpperCase(); }
+        if (isRedeem) { actionLabel = 'REDEEM'; actionClass = 'b-redeem'; }
+        if (isClose && h.reason === 'stop-loss') { actionLabel = 'SL'; actionClass = 'b-sl'; }
+        else if (isClose && h.reason === 'take-profit') { actionLabel = 'TP'; actionClass = 'b-tp'; }
+        else if (isClose && h.reason) { actionLabel = h.reason.toUpperCase(); }
 
         const cells = [
             makeTd((h.timestamp||'').slice(0,16), 'font-size:11px;color:var(--dim)'),
@@ -695,8 +792,8 @@ function renderHistory(history, totalCount) {
             makeTd(h.size_usd != null ? '$'+h.size_usd.toFixed(2) : (h.shares != null ? h.shares+' sh' : '')),
             makeTd(
                 (h.edge != null ? (h.edge>0?'+':'')+h.edge+'%' : '') +
-                (h.source ? (h.edge != null ? ' · ' : '') + h.source : '') +
-                (h.hold_hours != null ? (h.edge != null || h.source ? ' · ' : '') + h.hold_hours+'h' : ''),
+                (h.source ? (h.edge != null ? ' \u00b7 ' : '') + h.source : '') +
+                (h.hold_hours != null ? (h.edge != null || h.source ? ' \u00b7 ' : '') + h.hold_hours+'h' : ''),
                 'color:var(--dim)'),
         ];
 
@@ -704,6 +801,15 @@ function renderHistory(history, totalCount) {
         const pnlTd = ce('td');
         if (h.pnl != null) { const s = ce('span'); s.className = h.pnl >= 0 ? 'green' : 'red'; txt(s, '$'+(h.pnl>=0?'+':'')+h.pnl.toFixed(2)); pnlTd.appendChild(s); }
         cells.push(pnlTd);
+
+        // Result icon
+        const resTd = ce('td'); resTd.style.cssText = 'text-align:center;font-size:14px';
+        if (isClose || isRedeem) {
+            if (h.pnl != null && h.pnl > 0) txt(resTd, '\u2705');
+            else if (h.pnl != null && h.pnl < 0) txt(resTd, '\u274c');
+            else if (h.pnl != null && h.pnl === 0) txt(resTd, '\u2796');
+        }
+        cells.push(resTd);
 
         cells.push(makeTd(h.balance_after != null ? '$'+h.balance_after.toFixed(2) : ''));
 
@@ -717,6 +823,8 @@ function renderHistory(history, totalCount) {
 function makeTd(text, style) { const td=ce('td'); txt(td,text); if(style) td.setAttribute('style',style); return td; }
 function makeBadgeTd(text, cls) { const td=ce('td'); const s=ce('span'); s.className='badge '+cls; txt(s,text); td.appendChild(s); return td; }
 
+let _lastOrders = [];
+
 // ============ STATS ============
 function updateStats(d) {
     txt(el('s-equity'), '$' + d.total_equity.toFixed(2));
@@ -724,14 +832,18 @@ function updateStats(d) {
     roiEl.className = 'stat-sub ' + (d.roi_pct >= 0 ? 'green' : 'red');
     txt(el('s-balance'), '$' + d.balance_usd.toFixed(2));
     txt(el('s-invested'), '$' + d.invested_usd.toFixed(2));
-    txt(el('s-open-count'), d.open_positions + ' pos | ' + (d.exposure_pct||0) + '% exp');
+    txt(el('s-open-count'), d.open_positions + ' поз | ' + (d.exposure_pct||0) + '% загрузка');
     const up=el('s-upnl'); txt(up,'$'+(d.unrealized_pnl>=0?'+':'')+d.unrealized_pnl.toFixed(2)); up.className='stat-val '+(d.unrealized_pnl>=0?'green':'red');
     const rp=el('s-rpnl'); txt(rp,'$'+(d.realized_pnl>=0?'+':'')+d.realized_pnl.toFixed(2)); rp.className='stat-val '+(d.realized_pnl>=0?'green':'red');
-    txt(el('s-winrate'), d.win_rate + '%'); txt(el('s-wins'), d.win_count+'/'+d.closed_trades);
-    txt(el('s-edge'), d.avg_edge.toFixed(1) + '%');
+    txt(el('s-winrate'), d.win_rate + '%'); txt(el('s-wins'), d.win_count + ' из ' + d.closed_trades + ' в плюсе');
+    const modeEl=el('s-mode'); const mode=(d.mode||'live').toUpperCase(); txt(modeEl, mode); modeEl.className='stat-val '+(mode==='LIVE'?'green':'blue');
+    txt(el('s-mode-sub'), 'Live / Paper');
+    // LIVE badge
+    const liveBadge=el('live-badge'); if(liveBadge) liveBadge.style.display=(d.mode==='live'?'inline-flex':'none');
     const slotsEl=el('s-slots'); txt(slotsEl, d.free_slots||0); slotsEl.className='stat-val '+((d.free_slots||0)>3?'green':(d.free_slots>0?'':'red'));
-    txt(el('s-slots-sub'), d.total_trades + ' total trades'); txt(el('s-closed-count'), d.closed_trades + ' closed');
+    txt(el('s-slots-sub'), (d.free_slots||0) + ' свободных из ' + (d.max_positions||35)); txt(el('s-closed-count'), d.closed_trades + ' закрыто');
     if (d.equity_curve) drawEquity(d.equity_curve);
+    renderAlerts(d, _lastOrders);
 }
 
 function updateStatus(s) {
@@ -1062,18 +1174,33 @@ async function loadOpenOrders() {
         const r = await fetch('/api/live-orders');
         const orders = await r.json();
         renderOpenOrders(orders);
+        renderAlerts(initialData, orders);
     } catch (e) {
         // silently fail
     }
 }
 
+function _timeAgo(ts) {
+    if (!ts) return '';
+    const diff = Date.now() - (typeof ts === 'number' ? ts * 1000 : new Date(ts).getTime());
+    if (diff < 0) return '';
+    const m = Math.floor(diff / 60000);
+    if (m < 1) return 'только что';
+    if (m < 60) return m + ' мин назад';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + 'ч ' + (m % 60) + 'м назад';
+    const d = Math.floor(h / 24);
+    return d + 'д ' + (h % 24) + 'ч назад';
+}
+
 function renderOpenOrders(orders) {
+    _lastOrders = orders || [];
     const body = el('orders-body');
     body.textContent = '';
     txt(el('orders-count'), (orders.length || 0) + ' orders');
 
     if (!orders || !orders.length) {
-        const d = ce('div'); d.className = 'empty'; txt(d, 'No open orders'); body.appendChild(d);
+        const d = ce('div'); d.className = 'empty'; txt(d, 'Нет открытых ордеров'); body.appendChild(d);
         return;
     }
 
@@ -1086,7 +1213,8 @@ function renderOpenOrders(orders) {
         {t:'Price', cls:'col-num'},
         {t:'Size', cls:'col-num'},
         {t:'Filled', cls:'col-num'},
-        {t:'Status'},
+        {t:'Создан'},
+        {t:'Статус'},
         {t:''},
     ].forEach(h => { const th = ce('th'); txt(th, h.t); if (h.cls) th.className = h.cls; hr.appendChild(th); });
     thead.appendChild(hr); table.appendChild(thead);
@@ -1099,6 +1227,10 @@ function renderOpenOrders(orders) {
         const origSize = parseFloat(o.original_size || o.size || 0);
         const remainSize = parseFloat(o.size_matched || 0);
         const filled = origSize > 0 ? Math.round(remainSize / origSize * 100) : 0;
+        const isUnfilled = isSell && filled === 0;
+
+        // Red highlight for unfilled sell orders
+        if (isUnfilled) tr.style.background = 'rgba(248,81,73,0.04)';
 
         // Order ID
         const idTd = ce('td'); idTd.style.cssText = 'font-size:11px;color:var(--dim);font-family:JetBrains Mono,monospace';
@@ -1126,10 +1258,20 @@ function renderOpenOrders(orders) {
         const filledTd = ce('td'); filledTd.className = 'col-num';
         txt(filledTd, filled + '%'); tr.appendChild(filledTd);
 
-        // Status
+        // Created time
+        const timeTd = ce('td'); timeTd.style.cssText = 'font-size:11px;color:var(--dim)';
+        const createdTs = o.created_at || o.timestamp;
+        txt(timeTd, createdTs ? _timeAgo(createdTs) : ''); tr.appendChild(timeTd);
+
+        // Status + not-filled warning
         const statusTd = ce('td');
         const statusBadge = ce('span'); statusBadge.className = 'badge b-open';
-        txt(statusBadge, o.status || o.order_status || 'LIVE'); statusTd.appendChild(statusBadge); tr.appendChild(statusTd);
+        txt(statusBadge, o.status || o.order_status || 'LIVE'); statusTd.appendChild(statusBadge);
+        if (isUnfilled) {
+            statusTd.appendChild(document.createTextNode(' '));
+            const warnBadge = ce('span'); warnBadge.className = 'badge b-notfilled'; txt(warnBadge, 'Not filled'); statusTd.appendChild(warnBadge);
+        }
+        tr.appendChild(statusTd);
 
         // Cancel button
         const actTd = ce('td');
@@ -1165,11 +1307,99 @@ async function cancelOrder(orderId) {
     }
 }
 
+// ============ ALERTS ============
+function renderAlerts(portfolio, orders) {
+    const container = el('alerts-container');
+    if (!container) return;
+    container.textContent = '';
+    const alerts = [];
+    const positions = portfolio.positions || [];
+    const now = new Date();
+
+    // (a) Unfilled sell orders
+    (orders || []).forEach(o => {
+        const isSell = (o.side || '').toUpperCase() === 'SELL';
+        const origSize = parseFloat(o.original_size || o.size || 0);
+        const remainSize = parseFloat(o.size_matched || 0);
+        const filled = origSize > 0 ? Math.round(remainSize / origSize * 100) : 0;
+        if (isSell && filled === 0) {
+            const createdTs = o.created_at || o.timestamp;
+            const ago = createdTs ? _timeAgo(createdTs) : '';
+            alerts.push({icon:'\u26a0\ufe0f', text:'Ордер на продажу не исполнен' + (ago ? ' (висит ' + ago + ')' : ''), cls:'alert-warn'});
+        }
+    });
+
+    // (b) Expired positions
+    const expiredPositions = positions.filter(p => p.end_date && new Date(p.end_date) < now && !p.resolved);
+    expiredPositions.forEach(p => {
+        const endStr = new Date(p.end_date).toLocaleDateString('ru', {day:'numeric', month:'short'});
+        alerts.push({icon:'\u23f0', text:'Позиция просрочена: ' + (p.question||'').slice(0,60) + ' (закончилась ' + endStr + ')', cls:'alert-danger'});
+    });
+
+    // (c) Deep losses (>50%)
+    positions.forEach(p => {
+        if ((p.pnl_pct_raw || 0) < -0.50) {
+            alerts.push({icon:'\ud83d\udcc9', text:'Глубокий убыток: ' + (p.question||'').slice(0,50) + ' (' + p.pnl_pct + ')', cls:'alert-danger'});
+        }
+    });
+
+    // (d) Near TP
+    positions.forEach(p => {
+        const raw = p.pnl_pct_raw || 0;
+        const isW = isWeatherMarket(p.question);
+        if ((isW && raw > 0.60) || (!isW && raw > 0.35)) {
+            alerts.push({icon:'\ud83c\udfaf', text:'Близко к Take-Profit: ' + (p.question||'').slice(0,50) + ' (' + p.pnl_pct + ')', cls:'alert-success'});
+        }
+    });
+
+    // (e) Low balance
+    if (portfolio.balance_usd < 5) {
+        alerts.push({icon:'\ud83d\udcb0', text:'Низкий баланс: $' + portfolio.balance_usd.toFixed(2) + '. Пополните или закройте позиции', cls:'alert-danger'});
+    }
+
+    // (f) High exposure
+    if ((portfolio.exposure_pct || 0) > 80) {
+        alerts.push({icon:'\u26a1', text:'Высокая загрузка: ' + portfolio.exposure_pct + '% капитала в сделках', cls:'alert-warn'});
+    }
+
+    // (g) Redeemable positions
+    const redeemable = positions.filter(p => p.resolved && p.redeemable);
+    if (redeemable.length > 0) {
+        const hasValue = redeemable.some(p => (p.current_value || 0) > 0);
+        alerts.push({icon:'\u2705', text:'Можно забрать: ' + redeemable.length + ' завершённых позиций', cls: hasValue ? 'alert-success' : 'alert-dim', count: redeemable.length});
+    }
+
+    // (h) Duplicate markets
+    const marketCounts = {};
+    positions.forEach(p => {
+        if (p.market_id) { marketCounts[p.market_id] = (marketCounts[p.market_id] || {count:0, q:''}); marketCounts[p.market_id].count++; marketCounts[p.market_id].q = p.question || ''; }
+    });
+    Object.values(marketCounts).forEach(mc => {
+        if (mc.count > 1) {
+            alerts.push({icon:'\ud83d\udd04', text:'Дублирующая сделка: ' + mc.q.slice(0,50) + ' \u2014 куплена ' + mc.count + ' раз', cls:'alert-warn'});
+        }
+    });
+
+    if (alerts.length === 0) { container.style.display = 'none'; return; }
+
+    container.style.display = 'block';
+    const title = ce('div'); title.className = 'alerts-title'; txt(title, 'Оповещения (' + alerts.length + ')'); container.appendChild(title);
+    alerts.forEach(a => {
+        const card = ce('div'); card.className = 'alert-card ' + a.cls;
+        const icon = ce('span'); icon.className = 'alert-icon'; txt(icon, a.icon); card.appendChild(icon);
+        const text = ce('span'); text.className = 'alert-text'; txt(text, a.text); card.appendChild(text);
+        if (a.count) { const cnt = ce('span'); cnt.className = 'alert-count'; txt(cnt, String(a.count)); card.appendChild(cnt); }
+        container.appendChild(card);
+    });
+}
+
 // ============ INIT ============
 renderPositions(initialData.positions || []);
 _fullHistory = initialHistory;
 applyHistoryFilter();
 drawEquity(initialData.equity_curve || []);
+// Show LIVE badge on init
+if (initialData.mode === 'live') { const lb = el('live-badge'); if (lb) lb.style.display = 'inline-flex'; }
 addLog('Dashboard loaded', 'info');
 connectWS();
 checkScheduler();
