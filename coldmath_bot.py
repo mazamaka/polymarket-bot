@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -56,6 +57,9 @@ DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 POSITIONS_FILE = DATA_DIR / "coldmath_positions.json"
 HISTORY_FILE = DATA_DIR / "coldmath_history.json"
+
+# Thread-safe file access
+_file_lock = threading.Lock()
 
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -199,25 +203,41 @@ class ClobTrader:
 # ── Position Storage ────────────────────────────────────────────────────────
 
 
+def _atomic_write(path: Path, data: str) -> None:
+    """Атомарная запись файла (write tmp + rename)."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(data)
+    os.replace(tmp, path)
+
+
 def load_positions() -> list[dict]:
-    """Загрузить открытые позиции."""
-    if POSITIONS_FILE.exists():
-        return json.loads(POSITIONS_FILE.read_text())
+    """Загрузить открытые позиции (thread-safe)."""
+    with _file_lock:
+        if POSITIONS_FILE.exists():
+            try:
+                return json.loads(POSITIONS_FILE.read_text())
+            except (json.JSONDecodeError, OSError):
+                return []
     return []
 
 
 def save_positions(positions: list[dict]) -> None:
-    """Сохранить позиции."""
-    POSITIONS_FILE.write_text(json.dumps(positions, indent=2, default=str))
+    """Сохранить позиции (thread-safe, atomic write)."""
+    with _file_lock:
+        _atomic_write(POSITIONS_FILE, json.dumps(positions, indent=2, default=str))
 
 
 def append_history(entry: dict) -> None:
-    """Добавить запись в историю."""
-    history = []
-    if HISTORY_FILE.exists():
-        history = json.loads(HISTORY_FILE.read_text())
-    history.append(entry)
-    HISTORY_FILE.write_text(json.dumps(history, indent=2, default=str))
+    """Добавить запись в историю (thread-safe, atomic write)."""
+    with _file_lock:
+        history = []
+        if HISTORY_FILE.exists():
+            try:
+                history = json.loads(HISTORY_FILE.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+        history.append(entry)
+        _atomic_write(HISTORY_FILE, json.dumps(history, indent=2, default=str))
 
 
 # ── Scanner ─────────────────────────────────────────────────────────────────
@@ -378,8 +398,8 @@ def execute_trades(
     config: BotConfig,
     trader: ClobTrader | None = None,
     paper: bool = True,
-) -> None:
-    """Исполнить сделки по результатам сканирования."""
+) -> int:
+    """Исполнить сделки по результатам сканирования. Returns count of trades made."""
     positions = load_positions()
     existing_markets = {p["market_id"] for p in positions}
     current_exposure = sum(p["size_usd"] for p in positions)
@@ -492,6 +512,7 @@ def execute_trades(
         len(positions),
         current_exposure,
     )
+    return traded
 
 
 # ── Position Monitor ────────────────────────────────────────────────────────
@@ -563,11 +584,11 @@ def check_positions(config: BotConfig) -> None:
                     resolved = True
                     # If no Data API info, assume NO won (95%+ historical rate)
                     if not lp:
-                        no_won = True
                         logger.info(
-                            "Date-based resolve (>24h past): %s — assuming NO won",
+                            "Date-based: %s >24h past, no API data — skipping (will retry)",
                             pos["question"][:40],
                         )
+                        resolved = False  # Don't assume — wait for API confirmation
             except (ValueError, KeyError):
                 pass
 
@@ -607,17 +628,50 @@ def check_positions(config: BotConfig) -> None:
 # ── Web Dashboard ───────────────────────────────────────────────────────────
 
 
+def _signals_to_dicts(results: list[ScanResult]) -> list[dict]:
+    """Convert ScanResult list to JSON-serializable dicts."""
+    return [
+        {
+            "city": r.city,
+            "direction": r.direction,
+            "threshold": r.threshold,
+            "target_date": r.target_date,
+            "model_prob_no": r.model_prob_no,
+            "market_price_no": r.market_price_no,
+            "edge": r.edge,
+            "ensemble_count": r.ensemble_count,
+            "question": r.market.question,
+        }
+        for r in results
+    ]
+
+
 def create_web_app() -> "FastAPI":
     """Create FastAPI dashboard app."""
-    import threading
+    import secrets
 
-    from fastapi import FastAPI
+    from fastapi import Depends, FastAPI, HTTPException
     from fastapi.responses import HTMLResponse
+    from fastapi.security import HTTPBasic, HTTPBasicCredentials
     from pydantic import BaseModel as PydanticBaseModel
+    from pydantic import Field
 
     app = FastAPI(title="ColdMath Weather Bot")
+    security = HTTPBasic()
 
-    # State
+    _api_user = os.environ.get("DASHBOARD_USER", "admin")
+    _api_pass = os.environ.get("DASHBOARD_PASS", "coldmath")
+
+    def verify_auth(credentials: HTTPBasicCredentials = Depends(security)) -> str:
+        if not (
+            secrets.compare_digest(credentials.username, _api_user)
+            and secrets.compare_digest(credentials.password, _api_pass)
+        ):
+            raise HTTPException(status_code=401, headers={"WWW-Authenticate": "Basic"})
+        return credentials.username
+
+    # State (protected by _state_lock for thread safety)
+    _state_lock = threading.Lock()
     _state: dict = {
         "bot_running": False,
         "mode": os.environ.get("BOT_MODE", "paper"),
@@ -640,22 +694,22 @@ def create_web_app() -> "FastAPI":
     )
 
     class SettingsBody(PydanticBaseModel):
-        trade_size_usd: float | None = None
-        max_positions: int | None = None
-        max_total_exposure: float | None = None
-        max_days_ahead: int | None = None
-        min_no_price: float | None = None
-        min_ensemble_members: int | None = None
-        scan_interval_min: int | None = None
-        mode: str | None = None
+        trade_size_usd: float | None = Field(None, gt=0, le=1000)
+        max_positions: int | None = Field(None, ge=1, le=100)
+        max_total_exposure: float | None = Field(None, gt=0, le=10000)
+        max_days_ahead: int | None = Field(None, ge=1, le=16)
+        min_no_price: float | None = Field(None, ge=0.5, le=0.999)
+        min_ensemble_members: int | None = Field(None, ge=3, le=200)
+        scan_interval_min: int | None = Field(None, ge=5, le=120)
+        mode: str | None = Field(None, pattern="^(scan|paper|live)$")
 
     @app.get("/", response_class=HTMLResponse)
-    async def dashboard():
+    async def dashboard(_user: str = Depends(verify_auth)):
         tpl = Path(__file__).parent / "web" / "templates" / "coldmath.html"
         return HTMLResponse(tpl.read_text())
 
     @app.get("/api/status")
-    async def status():
+    async def status(_user: str = Depends(verify_auth)):
         positions = load_positions()
         history = []
         if HISTORY_FILE.exists():
@@ -727,49 +781,45 @@ def create_web_app() -> "FastAPI":
             },
         }
 
-    @app.post("/api/scan")
-    async def api_scan():
+    def _run_scan_and_trade() -> int:
+        """Shared scan+trade logic. Returns trades_made."""
         results = scan_weather_markets(_config)
-        _state["signals"] = [
-            {
-                "city": r.city,
-                "direction": r.direction,
-                "threshold": r.threshold,
-                "target_date": r.target_date,
-                "model_prob_no": r.model_prob_no,
-                "market_price_no": r.market_price_no,
-                "edge": r.edge,
-                "ensemble_count": r.ensemble_count,
-                "question": r.market.question,
-            }
-            for r in results
-        ]
-        _state["last_scan"] = datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
+        with _state_lock:
+            _state["signals"] = _signals_to_dicts(results)
+            _state["last_scan"] = datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
 
         trades_made = 0
         if _state["mode"] != "scan":
             is_paper = _state["mode"] == "paper"
             trader = None
             if not is_paper and _config.private_key:
-                if not _state["trader"]:
-                    _state["trader"] = ClobTrader(_config)
-                trader = _state["trader"]
-            execute_trades(results, _config, trader=trader, paper=is_paper)
-            trades_made = min(
-                len(results), _config.max_positions - len(load_positions())
+                with _state_lock:
+                    if not _state["trader"]:
+                        _state["trader"] = ClobTrader(_config)
+                    trader = _state["trader"]
+            trades_made = execute_trades(
+                results, _config, trader=trader, paper=is_paper
             )
 
         check_positions(_config)
-        return {"signals_count": len(results), "trades_made": max(0, trades_made)}
+        return trades_made
+
+    @app.post("/api/scan")
+    async def api_scan(_user: str = Depends(verify_auth)):
+        import asyncio
+
+        trades_made = await asyncio.to_thread(_run_scan_and_trade)
+        return {"signals_count": len(_state["signals"]), "trades_made": trades_made}
 
     @app.post("/api/start")
-    async def api_start():
+    async def api_start(_user: str = Depends(verify_auth)):
         if _state["bot_running"]:
             return {"status": "already running"}
 
         stop_evt = threading.Event()
-        _state["stop_event"] = stop_evt
-        _state["bot_running"] = True
+        with _state_lock:
+            _state["stop_event"] = stop_evt
+            _state["bot_running"] = True
 
         def bot_loop():
             logger.info(
@@ -779,40 +829,18 @@ def create_web_app() -> "FastAPI":
             )
             while not stop_evt.is_set():
                 try:
-                    results = scan_weather_markets(_config)
-                    _state["signals"] = [
-                        {
-                            "city": r.city,
-                            "direction": r.direction,
-                            "threshold": r.threshold,
-                            "target_date": r.target_date,
-                            "model_prob_no": r.model_prob_no,
-                            "market_price_no": r.market_price_no,
-                            "edge": r.edge,
-                            "ensemble_count": r.ensemble_count,
-                            "question": r.market.question,
-                        }
-                        for r in results
-                    ]
-                    _state["last_scan"] = datetime.now(tz=timezone.utc).strftime(
-                        "%H:%M:%S"
-                    )
-
-                    is_paper = _state["mode"] == "paper"
-                    trader = None
-                    if not is_paper and _config.private_key:
-                        if not _state["trader"]:
-                            _state["trader"] = ClobTrader(_config)
-                        trader = _state["trader"]
-                    execute_trades(results, _config, trader=trader, paper=is_paper)
-                    check_positions(_config)
+                    _run_scan_and_trade()
                 except Exception as e:
                     logger.error("Bot loop error: %s", e)
 
-                _state["next_scan_at"] = time.time() + _state["scan_interval_min"] * 60
+                with _state_lock:
+                    _state["next_scan_at"] = (
+                        time.time() + _state["scan_interval_min"] * 60
+                    )
                 stop_evt.wait(_state["scan_interval_min"] * 60)
 
-            _state["bot_running"] = False
+            with _state_lock:
+                _state["bot_running"] = False
             logger.info("Bot loop stopped")
 
         t = threading.Thread(target=bot_loop, daemon=True)
@@ -820,30 +848,32 @@ def create_web_app() -> "FastAPI":
         return {"status": "started"}
 
     @app.post("/api/stop")
-    async def api_stop():
-        if _state["stop_event"]:
-            _state["stop_event"].set()
-            _state["bot_running"] = False
+    async def api_stop(_user: str = Depends(verify_auth)):
+        with _state_lock:
+            if _state["stop_event"]:
+                _state["stop_event"].set()
+                _state["bot_running"] = False
         return {"status": "stopped"}
 
     @app.post("/api/settings")
-    async def api_settings(body: SettingsBody):
-        if body.trade_size_usd is not None:
-            _config.trade_size_usd = body.trade_size_usd
-        if body.max_positions is not None:
-            _config.max_positions = body.max_positions
-        if body.max_total_exposure is not None:
-            _config.max_total_exposure = body.max_total_exposure
-        if body.max_days_ahead is not None:
-            _config.max_days_ahead = body.max_days_ahead
-        if body.min_no_price is not None:
-            _config.min_no_price = body.min_no_price
-        if body.min_ensemble_members is not None:
-            _config.min_ensemble_members = body.min_ensemble_members
-        if body.scan_interval_min is not None:
-            _state["scan_interval_min"] = body.scan_interval_min
-        if body.mode is not None:
-            _state["mode"] = body.mode
+    async def api_settings(body: SettingsBody, _user: str = Depends(verify_auth)):
+        with _state_lock:
+            if body.trade_size_usd is not None:
+                _config.trade_size_usd = body.trade_size_usd
+            if body.max_positions is not None:
+                _config.max_positions = body.max_positions
+            if body.max_total_exposure is not None:
+                _config.max_total_exposure = body.max_total_exposure
+            if body.max_days_ahead is not None:
+                _config.max_days_ahead = body.max_days_ahead
+            if body.min_no_price is not None:
+                _config.min_no_price = body.min_no_price
+            if body.min_ensemble_members is not None:
+                _config.min_ensemble_members = body.min_ensemble_members
+            if body.scan_interval_min is not None:
+                _state["scan_interval_min"] = body.scan_interval_min
+            if body.mode is not None:
+                _state["mode"] = body.mode
         return {"status": "ok"}
 
     return app
