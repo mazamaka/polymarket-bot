@@ -386,6 +386,30 @@ def execute_trades(
 
     traded = 0
 
+    # Check live balance before trading
+    if not paper and trader:
+        try:
+            import httpx
+
+            wallet = config.funder_address
+            if wallet:
+                resp = httpx.get(
+                    f"https://data-api.polymarket.com/value?user={wallet.lower()}",
+                    timeout=10,
+                )
+                vals = resp.json()
+                cash = vals[0].get("value", 0) if vals else 0
+                if cash < config.trade_size_usd:
+                    logger.info(
+                        "SKIP trading: insufficient balance $%.2f < trade size $%.2f",
+                        cash,
+                        config.trade_size_usd,
+                    )
+                    return
+                logger.info("Balance check OK: $%.2f available", cash)
+        except Exception as e:
+            logger.warning("Balance check failed (proceeding): %s", e)
+
     for r in results:
         # Skip if already have position
         if r.market.condition_id in existing_markets:
