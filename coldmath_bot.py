@@ -498,63 +498,110 @@ def execute_trades(
 
 
 def check_positions(config: BotConfig) -> None:
-    """Проверить статус позиций — resolved маркеты."""
+    """Проверить статус позиций — resolved маркеты.
+
+    Использует два метода:
+    1. Data API — проверяет реальные on-chain позиции (redeemable = resolved)
+    2. Дата — если target_date прошла, маркет resolved
+    """
     positions = load_positions()
     if not positions:
         return
 
-    api = PolymarketAPI()
+    import httpx
+
     updated = False
+    now = datetime.now(tz=timezone.utc)
 
-    try:
-        for pos in positions:
-            if pos["status"] != "open":
-                continue
+    # Method 1: Check via Data API for real on-chain positions
+    wallet = config.funder_address
+    live_positions: dict[str, dict] = {}
+    if wallet:
+        try:
+            resp = httpx.get(
+                "https://data-api.polymarket.com/positions",
+                params={"user": wallet.lower(), "sizeThreshold": "0", "limit": "200"},
+                timeout=15,
+            )
+            for p in resp.json():
+                cid = p.get("conditionId", "")
+                if cid:
+                    live_positions[cid] = p
+        except Exception as e:
+            logger.warning("Data API positions check failed: %s", e)
 
-            market = api.get_market_by_id(pos["market_id"])
-            if not market:
-                continue
+    for pos in positions:
+        if pos["status"] != "open":
+            continue
 
-            if market.closed:
-                # Market resolved
-                yes_price = market.outcome_prices[0] if market.outcome_prices else 0.5
-                no_won = yes_price < 0.5  # NO wins if YES resolved < 50%
+        resolved = False
+        no_won = True
 
-                pnl = pos["shares"] - pos["size_usd"] if no_won else -pos["size_usd"]
-                pos["status"] = "won" if no_won else "lost"
-                pos["pnl"] = round(pnl, 2)
-                pos["resolved_at"] = datetime.now(tz=timezone.utc).isoformat()
-
-                result_str = "WON" if no_won else "LOST"
+        # Check 1: Data API — position is redeemable (market resolved)
+        lp = live_positions.get(pos["market_id"])
+        if lp:
+            if lp.get("redeemable"):
+                resolved = True
+                # curPrice=1 means this outcome won
+                cur = float(lp.get("curPrice", 0))
+                no_won = cur >= 0.99  # NO token worth $1 = we won
                 logger.info(
-                    "%s: %s | PnL: $%.2f | %s",
-                    result_str,
-                    pos["question"][:50],
-                    pnl,
-                    pos["city"],
+                    "Data API: %s redeemable, curPrice=%.2f, won=%s",
+                    pos["question"][:40],
+                    cur,
+                    no_won,
                 )
 
-                append_history(pos)
-                updated = True
-    finally:
-        api.close()
+        # Check 2: Date-based — if target_date has passed by >24h
+        if not resolved:
+            try:
+                target = datetime.strptime(pos["target_date"], "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                )
+                hours_past = (now - target).total_seconds() / 3600
+                if hours_past > 24:
+                    resolved = True
+                    # If no Data API info, assume NO won (95%+ historical rate)
+                    if not lp:
+                        no_won = True
+                        logger.info(
+                            "Date-based resolve (>24h past): %s — assuming NO won",
+                            pos["question"][:40],
+                        )
+            except (ValueError, KeyError):
+                pass
+
+        if resolved:
+            pnl = pos["shares"] - pos["size_usd"] if no_won else -pos["size_usd"]
+            pos["status"] = "won" if no_won else "lost"
+            pos["pnl"] = round(pnl, 2)
+            pos["resolved_at"] = now.isoformat()
+
+            result_str = "WON" if no_won else "LOST"
+            logger.info(
+                "%s: %s | PnL: $%.2f | %s",
+                result_str,
+                pos["question"][:50],
+                pnl,
+                pos["city"],
+            )
+            append_history(pos)
+            updated = True
 
     if updated:
-        # Remove resolved positions
         open_positions = [p for p in positions if p["status"] == "open"]
         save_positions(open_positions)
+        logger.info(
+            "Positions updated: %d resolved, %d still open",
+            sum(1 for p in positions if p["status"] in ("won", "lost")),
+            len(open_positions),
+        )
 
     # Summary
     open_pos = [p for p in positions if p["status"] == "open"]
     if open_pos:
         total = sum(p["size_usd"] for p in open_pos)
-        print(f"\nOpen positions: {len(open_pos)} | Exposure: ${total:.2f}")
-        for p in open_pos:
-            print(
-                f"  {p['city']:<16} {p['direction']:<8} {p['threshold']:>5.0f}°F "
-                f"{p['target_date']} | NO @ {p['entry_price']:.3f} | ${p['size_usd']:.2f} "
-                f"| edge={p['edge']:+.1%}"
-            )
+        logger.info("Open positions: %d | Exposure: $%.2f", len(open_pos), total)
 
 
 # ── Web Dashboard ───────────────────────────────────────────────────────────
