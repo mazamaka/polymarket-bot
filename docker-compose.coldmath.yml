@@ -1,0 +1,24 @@
+services:
+  coldmath:
+    build:
+      context: .
+      dockerfile: Dockerfile.coldmath
+    container_name: coldmath-bot
+    restart: unless-stopped
+    ports:
+      - "8866:8866"
+    environment:
+      - POLYGON_WALLET_PRIVATE_KEY=${POLYGON_WALLET_PRIVATE_KEY}
+      - POLYGON_WALLET_ADDRESS=${POLYGON_WALLET_ADDRESS:-0x842F71005C45Ca1Ea355512EA9F162a00051C363}
+      - CLOB_PROXY_URL=${CLOB_PROXY_URL:-}
+      - BOT_MODE=${BOT_MODE:-paper}
+      - TRADE_SIZE=${TRADE_SIZE:-2.0}
+      - MAX_POSITIONS=${MAX_POSITIONS:-10}
+      - MAX_EXPOSURE=${MAX_EXPOSURE:-50}
+      - MAX_DAYS=${MAX_DAYS:-5}
+      - SCAN_INTERVAL=${SCAN_INTERVAL:-30}
+    volumes:
+      - coldmath-data:/app/data
+
+volumes:
+  coldmath-data:

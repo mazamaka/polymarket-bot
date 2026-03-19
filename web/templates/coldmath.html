@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ColdMath Weather Bot</title>
+    <style>
+        :root { --bg:#0d1117; --card:#161b22; --card2:#1c2129; --border:#30363d; --text:#e6edf3; --dim:#8b949e; --green:#3fb950; --red:#f85149; --blue:#58a6ff; --yellow:#d29922; --purple:#bc8cff; }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--bg); color:var(--text); line-height:1.5; padding:16px; max-width:1440px; margin:0 auto; }
+
+        .header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid var(--border); flex-wrap:wrap; gap:10px; }
+        .header h1 { font-size:20px; } .header h1 span { color:var(--blue); }
+        .controls { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+
+        .status-bar { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--dim); margin-bottom:14px; }
+        .dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+        .dot.idle { background:var(--dim); } .dot.running { background:var(--green); animation:pulse 1.5s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+        .btn { padding:5px 12px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--text); cursor:pointer; font-size:12px; transition:all .15s; white-space:nowrap; }
+        .btn:hover { border-color:var(--blue); color:var(--blue); } .btn:disabled { opacity:.4; cursor:not-allowed; }
+        .btn-go { background:#238636; border-color:#238636; color:#fff; } .btn-go:hover { background:#2ea043; }
+        .btn-danger { background:rgba(248,81,73,.15); border-color:var(--red); color:var(--red); } .btn-danger:hover { background:rgba(248,81,73,.3); }
+
+        .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:16px; }
+        .stat { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; }
+        .stat-label { font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; }
+        .stat-val { font-size:22px; font-weight:600; margin-top:1px; }
+        .stat-sub { font-size:11px; color:var(--dim); margin-top:1px; }
+        .green { color:var(--green); } .red { color:var(--red); } .blue { color:var(--blue); } .yellow { color:var(--yellow); }
+
+        .section { background:var(--card); border:1px solid var(--border); border-radius:8px; margin-bottom:16px; overflow:hidden; }
+        .sec-head { padding:10px 14px; border-bottom:1px solid var(--border); font-weight:600; font-size:14px; display:flex; justify-content:space-between; align-items:center; }
+        .sec-head .right { font-size:11px; color:var(--dim); font-weight:400; }
+
+        table { width:100%; border-collapse:collapse; }
+        th { text-align:left; padding:6px 12px; font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:.4px; border-bottom:1px solid var(--border); background:rgba(0,0,0,.2); white-space:nowrap; }
+        td { padding:8px 12px; font-size:12px; border-bottom:1px solid var(--border); }
+        tr:last-child td { border-bottom:none; }
+        tr:hover { background:rgba(88,166,255,.04); }
+        .col-num { text-align:right; font-family:'JetBrains Mono',monospace; font-size:12px; }
+
+        .badge { display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; font-weight:600; }
+        .b-no { background:rgba(248,81,73,.12); color:var(--red); }
+        .b-won { background:rgba(63,185,80,.12); color:var(--green); }
+        .b-lost { background:rgba(248,81,73,.12); color:var(--red); }
+        .b-exactly { background:rgba(188,140,255,.12); color:var(--purple); }
+        .b-between { background:rgba(210,153,34,.12); color:var(--yellow); }
+        .b-below { background:rgba(88,166,255,.12); color:var(--blue); }
+        .b-above { background:rgba(248,81,73,.12); color:var(--red); }
+
+        .empty { padding:24px; text-align:center; color:var(--dim); font-size:13px; }
+
+        .log { max-height:200px; overflow-y:auto; padding:10px 14px; font-family:'JetBrains Mono',monospace; font-size:11px; line-height:1.7; color:var(--dim); background:rgba(0,0,0,.3); }
+
+        .settings-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px; padding:14px; }
+        .setting-item label { font-size:11px; color:var(--dim); text-transform:uppercase; display:block; margin-bottom:3px; }
+        .setting-item input, .setting-item select { width:100%; padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--card2); color:var(--text); font-size:13px; }
+
+        @media(max-width:768px) { .stats { grid-template-columns:repeat(2,1fr); } table { font-size:11px; } td,th { padding:5px 8px; } }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>ColdMath <span>Weather Bot</span></h1>
+        <div class="controls">
+            <button class="btn btn-go" onclick="runScan()">Scan Now</button>
+            <button class="btn" onclick="toggleBot()" id="btnToggle">Start Bot</button>
+            <button class="btn" onclick="toggleSettings()">Settings</button>
+        </div>
+    </div>
+
+    <div class="status-bar">
+        <div class="dot" id="statusDot"></div>
+        <span id="statusText">Idle</span>
+        <span style="margin-left:auto;color:var(--dim)" id="lastUpdate"></span>
+    </div>
+
+    <div class="stats" id="statsRow">
+        <div class="stat"><div class="stat-label">Cash Balance</div><div class="stat-val blue" id="sCash">$0</div></div>
+        <div class="stat"><div class="stat-label">Open Positions</div><div class="stat-val" id="sPositions">0</div><div class="stat-sub" id="sExposure">$0 exposure</div></div>
+        <div class="stat"><div class="stat-label">Total P&L</div><div class="stat-val" id="sPnl">$0</div><div class="stat-sub" id="sWinRate">-</div></div>
+        <div class="stat"><div class="stat-label">Today Trades</div><div class="stat-val" id="sTrades">0</div><div class="stat-sub" id="sTradesInfo">-</div></div>
+        <div class="stat"><div class="stat-label">Signals Found</div><div class="stat-val blue" id="sSignals">0</div><div class="stat-sub" id="sLastScan">-</div></div>
+        <div class="stat"><div class="stat-label">Avg Edge</div><div class="stat-val green" id="sEdge">-</div></div>
+    </div>
+
+    <div class="section" id="settingsPanel" style="display:none">
+        <div class="sec-head">Settings</div>
+        <div class="settings-grid">
+            <div class="setting-item"><label>Trade Size ($)</label><input type="number" id="cfgSize" value="2.0" step="0.5" min="0.5"></div>
+            <div class="setting-item"><label>Max Positions</label><input type="number" id="cfgMaxPos" value="10" min="1" max="50"></div>
+            <div class="setting-item"><label>Max Exposure ($)</label><input type="number" id="cfgMaxExp" value="50" min="5"></div>
+            <div class="setting-item"><label>Max Days Ahead</label><input type="number" id="cfgMaxDays" value="5" min="1" max="16"></div>
+            <div class="setting-item"><label>Min NO Price</label><input type="number" id="cfgMinNo" value="0.90" step="0.01" min="0.5" max="0.99"></div>
+            <div class="setting-item"><label>Min Ensemble Members</label><input type="number" id="cfgMinEns" value="10" min="3"></div>
+            <div class="setting-item"><label>Scan Interval (min)</label><input type="number" id="cfgInterval" value="30" min="5" max="120"></div>
+            <div class="setting-item"><label>Mode</label><select id="cfgMode"><option value="paper">Paper</option><option value="live">Live</option></select></div>
+        </div>
+        <div style="padding:0 14px 14px;text-align:right"><button class="btn btn-go" onclick="saveSettings()">Save</button></div>
+    </div>
+
+    <div class="section">
+        <div class="sec-head">Open Positions <span class="right" id="posCount">0 positions</span></div>
+        <div id="positionsBody"><div class="empty">No positions yet</div></div>
+    </div>
+
+    <div class="section">
+        <div class="sec-head">Latest Signals <span class="right" id="sigCount">0 signals</span></div>
+        <div id="signalsBody"><div class="empty">Run scan to find signals</div></div>
+    </div>
+
+    <div class="section">
+        <div class="sec-head">Trade History <span class="right" id="histCount">0 trades</span></div>
+        <div id="historyBody"><div class="empty">No trades yet</div></div>
+    </div>
+
+    <div class="section">
+        <div class="sec-head">Logs</div>
+        <div class="log" id="logBox"></div>
+    </div>
+
+<script>
+/* All rendering uses textContent and DOM APIs — no innerHTML with user data */
+const API = '';
+function $(id) { return document.getElementById(id); }
+
+function addLog(msg, cls) {
+    const box = $('logBox');
+    const div = document.createElement('div');
+    if (cls) div.className = cls;
+    div.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+}
+
+function pnlClass(v) { return v >= 0 ? 'green' : 'red'; }
+function pnlFmt(v) { return (v >= 0 ? '+' : '') + '$' + v.toFixed(2); }
+function pctFmt(v) { return (v >= 0 ? '+' : '') + v.toFixed(1) + '%'; }
+
+function createBadge(text, cls) {
+    const s = document.createElement('span');
+    s.className = 'badge b-' + cls;
+    s.textContent = text;
+    return s;
+}
+
+async function fetchJSON(url, opts) {
+    try { const r = await fetch(API + url, opts); return await r.json(); }
+    catch(e) { addLog('API error: ' + e.message, 'error'); return null; }
+}
+
+function buildTable(headers, rows) {
+    const t = document.createElement('table');
+    const thead = t.createTHead();
+    const hr = thead.insertRow();
+    headers.forEach(h => {
+        const th = document.createElement('th');
+        th.textContent = h.label;
+        if (h.num) th.className = 'col-num';
+        hr.appendChild(th);
+    });
+    const tbody = t.createTBody();
+    rows.forEach(cells => {
+        const tr = tbody.insertRow();
+        cells.forEach((cell, i) => {
+            const td = tr.insertCell();
+            if (headers[i]?.num) td.className = 'col-num';
+            if (cell instanceof HTMLElement) td.appendChild(cell);
+            else { td.textContent = cell; if (typeof cell === 'string' && cell.startsWith('+')) td.classList.add('green'); if (typeof cell === 'string' && cell.startsWith('-$')) td.classList.add('red'); }
+            if (headers[i]?.cls) td.classList.add(headers[i].cls);
+        });
+    });
+    return t;
+}
+
+async function refresh() {
+    const data = await fetchJSON('/api/status');
+    if (!data) return;
+
+    $('sCash').textContent = '$' + (data.cash_balance || 0).toFixed(2);
+    $('sPositions').textContent = data.positions?.length || 0;
+    $('sExposure').textContent = '$' + (data.exposure || 0).toFixed(2) + ' exposure';
+    $('posCount').textContent = (data.positions?.length || 0) + ' positions';
+
+    const pnl = data.total_pnl || 0;
+    $('sPnl').textContent = pnlFmt(pnl);
+    $('sPnl').className = 'stat-val ' + pnlClass(pnl);
+    $('sWinRate').textContent = data.win_rate ? data.win_rate.toFixed(0) + '% win rate' : '-';
+    $('sTrades').textContent = data.today_trades || 0;
+    $('sTradesInfo').textContent = (data.total_trades || 0) + ' total';
+    $('sSignals').textContent = data.signals_count || 0;
+    $('sLastScan').textContent = data.last_scan || '-';
+    $('sEdge').textContent = data.avg_edge ? pctFmt(data.avg_edge * 100) : '-';
+
+    const running = data.bot_running || false;
+    $('statusDot').className = 'dot ' + (running ? 'running' : 'idle');
+    $('statusText').textContent = running ? 'Running (' + (data.mode||'paper') + ') - next scan in ' + (data.next_scan_in||'?') : 'Idle';
+    $('btnToggle').textContent = running ? 'Stop Bot' : 'Start Bot';
+    $('btnToggle').className = running ? 'btn btn-danger' : 'btn';
+    $('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
+
+    if (data.config) {
+        $('cfgSize').value = data.config.trade_size_usd;
+        $('cfgMaxPos').value = data.config.max_positions;
+        $('cfgMaxExp').value = data.config.max_total_exposure;
+        $('cfgMaxDays').value = data.config.max_days_ahead;
+        $('cfgMinNo').value = data.config.min_no_price;
+        $('cfgMinEns').value = data.config.min_ensemble_members;
+        $('cfgInterval').value = data.config.scan_interval_min || 30;
+        $('cfgMode').value = data.config.mode || 'paper';
+    }
+
+    // Positions
+    const pb = $('positionsBody');
+    pb.replaceChildren();
+    const positions = data.positions || [];
+    if (!positions.length) { const d = document.createElement('div'); d.className='empty'; d.textContent='No open positions'; pb.appendChild(d); }
+    else {
+        const t = buildTable(
+            [{label:'Market'},{label:'City'},{label:'Direction'},{label:'NO Price',num:true},{label:'Size',num:true},{label:'Edge',num:true},{label:'Resolves',num:true}],
+            positions.map(p => [
+                (p.question||'').substring(0,60),
+                p.city||'-',
+                createBadge(p.direction, p.direction),
+                (p.entry_price*100).toFixed(1)+'c',
+                '$'+p.size_usd.toFixed(2),
+                '+' + (p.edge*100).toFixed(1) + '%',
+                p.target_date
+            ])
+        );
+        pb.appendChild(t);
+    }
+
+    // Signals
+    const sb = $('signalsBody');
+    sb.replaceChildren();
+    const signals = data.signals || [];
+    $('sigCount').textContent = signals.length + ' signals';
+    if (!signals.length) { const d = document.createElement('div'); d.className='empty'; d.textContent='Run scan to find signals'; sb.appendChild(d); }
+    else {
+        const t = buildTable(
+            [{label:'City'},{label:'Direction'},{label:'Threshold',num:true},{label:'Model NO',num:true},{label:'Market NO',num:true},{label:'Edge',num:true},{label:'Ensemble',num:true},{label:'Date'}],
+            signals.map(s => [
+                s.city,
+                createBadge(s.direction, s.direction),
+                s.threshold.toFixed(0)+'F',
+                (s.model_prob_no*100).toFixed(1)+'%',
+                (s.market_price_no*100).toFixed(1)+'%',
+                '+' + (s.edge*100).toFixed(1) + '%',
+                String(s.ensemble_count),
+                s.target_date
+            ])
+        );
+        sb.appendChild(t);
+    }
+
+    // History
+    const hb = $('historyBody');
+    hb.replaceChildren();
+    const history = data.history || [];
+    $('histCount').textContent = history.length + ' trades';
+    if (!history.length) { const d = document.createElement('div'); d.className='empty'; d.textContent='No trade history'; hb.appendChild(d); }
+    else {
+        const t = buildTable(
+            [{label:'Market'},{label:'City'},{label:'Direction'},{label:'Result'},{label:'P&L',num:true},{label:'Entry',num:true},{label:'Date'}],
+            history.slice().reverse().slice(0,50).map(h => {
+                const won = h.status === 'won';
+                return [
+                    (h.question||'').substring(0,50),
+                    h.city||'-',
+                    createBadge(h.direction||'exactly', h.direction||'exactly'),
+                    createBadge(won?'WON':'LOST', won?'won':'lost'),
+                    pnlFmt(h.pnl||0),
+                    ((h.entry_price||0)*100).toFixed(1)+'c',
+                    h.target_date||'-'
+                ];
+            })
+        );
+        hb.appendChild(t);
+    }
+}
+
+async function runScan() {
+    addLog('Starting scan...', 'info');
+    const r = await fetchJSON('/api/scan', {method:'POST'});
+    if (r) addLog('Scan complete: ' + r.signals_count + ' signals, ' + r.trades_made + ' trades', 'trade');
+    setTimeout(refresh, 1000);
+}
+
+async function toggleBot() {
+    const data = await fetchJSON('/api/status');
+    if (data?.bot_running) { await fetchJSON('/api/stop',{method:'POST'}); addLog('Bot stopped','info'); }
+    else { await fetchJSON('/api/start',{method:'POST'}); addLog('Bot started','trade'); }
+    setTimeout(refresh, 500);
+}
+
+function toggleSettings() {
+    const p = $('settingsPanel');
+    p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+
+async function saveSettings() {
+    const cfg = {
+        trade_size_usd: parseFloat($('cfgSize').value),
+        max_positions: parseInt($('cfgMaxPos').value),
+        max_total_exposure: parseFloat($('cfgMaxExp').value),
+        max_days_ahead: parseInt($('cfgMaxDays').value),
+        min_no_price: parseFloat($('cfgMinNo').value),
+        min_ensemble_members: parseInt($('cfgMinEns').value),
+        scan_interval_min: parseInt($('cfgInterval').value),
+        mode: $('cfgMode').value,
+    };
+    const r = await fetchJSON('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg)});
+    if (r) addLog('Settings saved', 'info');
+    toggleSettings();
+}
+
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>

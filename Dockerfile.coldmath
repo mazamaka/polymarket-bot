@@ -1,0 +1,28 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
+
+# Python deps
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# App code
+COPY coldmath_bot.py .
+COPY config.py .
+COPY analyzer/ analyzer/
+COPY polymarket/ polymarket/
+COPY trader/ trader/
+COPY utils/ utils/
+COPY web/templates/coldmath.html web/templates/coldmath.html
+
+# Data dir
+RUN mkdir -p data
+
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8866
+
+CMD ["python", "coldmath_bot.py", "web", "--port", "8866"]
