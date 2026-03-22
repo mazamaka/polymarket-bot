@@ -625,6 +625,84 @@ def check_positions(config: BotConfig) -> None:
         logger.info("Open positions: %d | Exposure: $%.2f", len(open_pos), total)
 
 
+# ── Auto-Redeem ────────────────────────────────────────────────────────────
+
+
+def _create_redeem_service(config: BotConfig) -> object | None:
+    """Создать PolyWeb3Service для auto-redeem. Требует Builder API credentials."""
+    builder_key = os.environ.get("BUILDER_KEY", "")
+    builder_secret = os.environ.get("BUILDER_SECRET", "")
+    builder_passphrase = os.environ.get("BUILDER_PASSPHRASE", "")
+
+    if not all([config.private_key, builder_key, builder_secret, builder_passphrase]):
+        return None
+
+    try:
+        from poly_web3 import RELAYER_URL, PolyWeb3Service
+        from py_builder_relayer_client.client import RelayClient
+        from py_builder_signing_sdk.config import BuilderConfig
+        from py_builder_signing_sdk.sdk_types import BuilderApiKeyCreds
+
+        funder = config.funder_address or None
+
+        clob = ClobClient(
+            host=config.clob_host,
+            chain_id=config.chain_id,
+            key=config.private_key,
+            signature_type=2,
+            funder=funder,
+        )
+        clob.set_api_creds(clob.create_or_derive_api_creds())
+
+        relayer = RelayClient(
+            RELAYER_URL,
+            config.chain_id,
+            config.private_key,
+            BuilderConfig(
+                local_builder_creds=BuilderApiKeyCreds(
+                    key=builder_key,
+                    secret=builder_secret,
+                    passphrase=builder_passphrase,
+                )
+            ),
+        )
+
+        service = PolyWeb3Service(
+            clob_client=clob,
+            relayer_client=relayer,
+        )
+        logger.info("Auto-redeem service initialized")
+        return service
+    except Exception as e:
+        logger.error("Failed to create redeem service: %s", e)
+        return None
+
+
+def auto_redeem(config: BotConfig, redeem_service: object | None = None) -> int:
+    """Auto-redeem выигранных позиций. Returns count of redeemed positions."""
+    if redeem_service is None:
+        return 0
+
+    try:
+        results = redeem_service.redeem_all(batch_size=10)
+        if not results:
+            logger.info("Auto-redeem: no redeemable positions")
+            return 0
+
+        redeemed = len([r for r in results if r is not None])
+        failed = len([r for r in results if r is None])
+
+        if redeemed > 0:
+            logger.info("Auto-redeem: %d positions redeemed successfully", redeemed)
+        if failed > 0:
+            logger.warning("Auto-redeem: %d positions failed (will retry)", failed)
+
+        return redeemed
+    except Exception as e:
+        logger.error("Auto-redeem error: %s", e)
+        return 0
+
+
 # ── Web Dashboard ───────────────────────────────────────────────────────────
 
 
@@ -681,6 +759,7 @@ def create_web_app() -> "FastAPI":
         "signals": [],
         "trader": None,
         "stop_event": None,
+        "redeem_service": None,
     }
 
     _config = BotConfig(
@@ -802,7 +881,28 @@ def create_web_app() -> "FastAPI":
             )
 
         check_positions(_config)
+
+        # Auto-redeem resolved positions
+        if _state["mode"] == "live":
+            with _state_lock:
+                if not _state["redeem_service"]:
+                    _state["redeem_service"] = _create_redeem_service(_config)
+            auto_redeem(_config, _state["redeem_service"])
+
         return trades_made
+
+    @app.post("/api/redeem")
+    async def api_redeem(_user: str = Depends(verify_auth)):
+        import asyncio
+
+        def _do_redeem() -> int:
+            with _state_lock:
+                if not _state["redeem_service"]:
+                    _state["redeem_service"] = _create_redeem_service(_config)
+            return auto_redeem(_config, _state["redeem_service"])
+
+        redeemed = await asyncio.to_thread(_do_redeem)
+        return {"redeemed": redeemed}
 
     @app.post("/api/scan")
     async def api_scan(_user: str = Depends(verify_auth)):

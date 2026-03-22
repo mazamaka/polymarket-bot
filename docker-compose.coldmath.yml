@@ -17,6 +17,9 @@ services:
       - MAX_EXPOSURE=${MAX_EXPOSURE:-50}
       - MAX_DAYS=${MAX_DAYS:-5}
       - SCAN_INTERVAL=${SCAN_INTERVAL:-30}
+      - BUILDER_KEY=${BUILDER_KEY:-}
+      - BUILDER_SECRET=${BUILDER_SECRET:-}
+      - BUILDER_PASSPHRASE=${BUILDER_PASSPHRASE:-}
     volumes:
       - coldmath-data:/app/data
 

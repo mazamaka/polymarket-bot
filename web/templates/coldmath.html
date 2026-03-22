@@ -66,6 +66,7 @@
         <h1>ColdMath <span>Weather Bot</span></h1>
         <div class="controls">
             <button class="btn btn-go" onclick="runScan()">Scan Now</button>
+            <button class="btn" onclick="runRedeem()" id="btnRedeem" style="background:rgba(63,185,80,.15);border-color:var(--green);color:var(--green)">Redeem</button>
             <button class="btn" onclick="toggleBot()" id="btnToggle">Start Bot</button>
             <button class="btn" onclick="toggleSettings()">Settings</button>
         </div>
@@ -280,6 +281,13 @@ async function refresh() {
         );
         hb.appendChild(t);
     }
+}
+
+async function runRedeem() {
+    addLog('Starting auto-redeem...', 'info');
+    const r = await fetchJSON('/api/redeem', {method:'POST'});
+    if (r) addLog('Redeem complete: ' + r.redeemed + ' positions redeemed', 'trade');
+    setTimeout(refresh, 1000);
 }
 
 async function runScan() {
