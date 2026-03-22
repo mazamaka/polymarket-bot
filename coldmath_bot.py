@@ -62,6 +62,44 @@ HISTORY_FILE = DATA_DIR / "coldmath_history.json"
 _file_lock = threading.Lock()
 
 
+# ── On-chain helpers ────────────────────────────────────────────────────────
+
+_w3_instance = None
+_USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+_USDC_ABI = [
+    {
+        "inputs": [{"name": "account", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    }
+]
+
+
+def _get_w3():
+    """Cached Web3 instance."""
+    global _w3_instance
+    if _w3_instance is None:
+        from web3 import Web3
+
+        _w3_instance = Web3(Web3.HTTPProvider("https://polygon-bor.publicnode.com"))
+    return _w3_instance
+
+
+def _get_usdc_balance(wallet: str) -> float:
+    """Get on-chain USDC balance for wallet address."""
+    if not wallet:
+        return 0.0
+    from web3 import Web3
+
+    w3 = _get_w3()
+    usdc = w3.eth.contract(
+        address=Web3.to_checksum_address(_USDC_ADDRESS), abi=_USDC_ABI
+    )
+    return usdc.functions.balanceOf(Web3.to_checksum_address(wallet)).call() / 1e6
+
+
 # ── Config ──────────────────────────────────────────────────────────────────
 
 
@@ -406,27 +444,18 @@ def execute_trades(
 
     traded = 0
 
-    # Check live balance before trading
+    # Check live balance before trading (on-chain USDC)
     if not paper and trader:
         try:
-            import httpx
-
-            wallet = config.funder_address
-            if wallet:
-                resp = httpx.get(
-                    f"https://data-api.polymarket.com/value?user={wallet.lower()}",
-                    timeout=10,
+            cash = _get_usdc_balance(config.funder_address)
+            if cash < config.trade_size_usd:
+                logger.info(
+                    "SKIP trading: insufficient balance $%.2f < trade size $%.2f",
+                    cash,
+                    config.trade_size_usd,
                 )
-                vals = resp.json()
-                cash = vals[0].get("value", 0) if vals else 0
-                if cash < config.trade_size_usd:
-                    logger.info(
-                        "SKIP trading: insufficient balance $%.2f < trade size $%.2f",
-                        cash,
-                        config.trade_size_usd,
-                    )
-                    return
-                logger.info("Balance check OK: $%.2f available", cash)
+                return 0
+            logger.info("Balance check OK: $%.2f available", cash)
         except Exception as e:
             logger.warning("Balance check failed (proceeding): %s", e)
 
@@ -460,7 +489,7 @@ def execute_trades(
         else:
             if not trader:
                 logger.error("No trader for live mode")
-                return
+                return 0
 
             # Check orderbook for best ask
             best_ask = trader.get_best_ask(r.no_token_id)
@@ -794,9 +823,10 @@ def create_web_app() -> "FastAPI":
         if HISTORY_FILE.exists():
             history = json.loads(HISTORY_FILE.read_text())
 
-        # Enrich positions with live Data API prices
+        # Fetch live data from Data API (single request for positions + portfolio)
         wallet = _config.funder_address or ""
-        if wallet and positions:
+        portfolio_value = 0
+        if wallet:
             try:
                 import httpx
 
@@ -809,11 +839,16 @@ def create_web_app() -> "FastAPI":
                     },
                     timeout=10,
                 )
+                live_data = resp.json()
                 live_map = {}
-                for lp in resp.json():
+                for lp in live_data:
                     cid = lp.get("conditionId", "")
                     if cid:
                         live_map[cid] = lp
+                portfolio_value = sum(
+                    float(lp.get("currentValue", 0)) for lp in live_data
+                )
+
                 for pos in positions:
                     lp = live_map.get(pos.get("market_id", ""))
                     if lp:
@@ -845,47 +880,11 @@ def create_web_app() -> "FastAPI":
             remaining = max(0, _state["next_scan_at"] - time.time())
             next_in = f"{int(remaining // 60)}m {int(remaining % 60)}s"
 
-        # Get balances: on-chain USDC (cash) + Data API (portfolio value)
+        # On-chain USDC balance (cached Web3)
         cash = 0
-        portfolio_value = 0
-        wallet = _config.funder_address or ""
         if wallet:
             try:
-                from web3 import Web3
-
-                w3 = Web3(Web3.HTTPProvider("https://polygon-bor.publicnode.com"))
-                usdc_abi = [
-                    {
-                        "inputs": [{"name": "account", "type": "address"}],
-                        "name": "balanceOf",
-                        "outputs": [{"name": "", "type": "uint256"}],
-                        "stateMutability": "view",
-                        "type": "function",
-                    }
-                ]
-                usdc = w3.eth.contract(
-                    address=Web3.to_checksum_address(
-                        "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
-                    ),
-                    abi=usdc_abi,
-                )
-                cash = (
-                    usdc.functions.balanceOf(Web3.to_checksum_address(wallet)).call()
-                    / 1e6
-                )
-            except Exception:
-                pass
-
-            try:
-                import httpx
-
-                resp = httpx.get(
-                    f"https://data-api.polymarket.com/value?user={wallet.lower()}",
-                    timeout=5,
-                )
-                vals = resp.json()
-                if vals:
-                    portfolio_value = vals[0].get("value", 0)
+                cash = _get_usdc_balance(wallet)
             except Exception:
                 pass
 
@@ -969,10 +968,10 @@ def create_web_app() -> "FastAPI":
         trades_made = await asyncio.to_thread(_run_scan_and_trade)
         return {"signals_count": len(_state["signals"]), "trades_made": trades_made}
 
-    @app.post("/api/start")
-    async def api_start(_user: str = Depends(verify_auth)):
+    def _start_bot_loop(source: str = "manual") -> bool:
+        """Start the bot loop thread. Returns True if started."""
         if _state["bot_running"]:
-            return {"status": "already running"}
+            return False
 
         stop_evt = threading.Event()
         with _state_lock:
@@ -981,7 +980,8 @@ def create_web_app() -> "FastAPI":
 
         def bot_loop():
             logger.info(
-                "Bot loop started (mode=%s, interval=%dm)",
+                "Bot started (%s, mode=%s, interval=%dm)",
+                source,
                 _state["mode"],
                 _state["scan_interval_min"],
             )
@@ -999,11 +999,16 @@ def create_web_app() -> "FastAPI":
 
             with _state_lock:
                 _state["bot_running"] = False
-            logger.info("Bot loop stopped")
+            logger.info("Bot stopped")
 
-        t = threading.Thread(target=bot_loop, daemon=True)
-        t.start()
-        return {"status": "started"}
+        threading.Thread(target=bot_loop, daemon=True).start()
+        return True
+
+    @app.post("/api/start")
+    async def api_start(_user: str = Depends(verify_auth)):
+        if _start_bot_loop("api"):
+            return {"status": "started"}
+        return {"status": "already running"}
 
     @app.post("/api/stop")
     async def api_stop(_user: str = Depends(verify_auth)):
@@ -1034,45 +1039,13 @@ def create_web_app() -> "FastAPI":
                 _state["mode"] = body.mode
         return {"status": "ok"}
 
-    # Auto-start bot loop if BOT_MODE is paper or live
     @app.on_event("startup")
     async def _autostart_bot():
         if _state["mode"] in ("paper", "live"):
             import asyncio
 
-            # Small delay to let uvicorn fully start
             await asyncio.sleep(2)
-
-            stop_evt = threading.Event()
-            with _state_lock:
-                _state["stop_event"] = stop_evt
-                _state["bot_running"] = True
-
-            def bot_loop():
-                logger.info(
-                    "Bot auto-started (mode=%s, interval=%dm)",
-                    _state["mode"],
-                    _state["scan_interval_min"],
-                )
-                while not stop_evt.is_set():
-                    try:
-                        _run_scan_and_trade()
-                    except Exception as e:
-                        logger.error("Bot loop error: %s", e)
-
-                    with _state_lock:
-                        _state["next_scan_at"] = (
-                            time.time() + _state["scan_interval_min"] * 60
-                        )
-                    stop_evt.wait(_state["scan_interval_min"] * 60)
-
-                with _state_lock:
-                    _state["bot_running"] = False
-                logger.info("Bot loop stopped")
-
-            t = threading.Thread(target=bot_loop, daemon=True)
-            t.start()
-            logger.info("Bot auto-started on startup")
+            _start_bot_loop("autostart")
 
     return app
 
