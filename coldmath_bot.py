@@ -794,6 +794,36 @@ def create_web_app() -> "FastAPI":
         if HISTORY_FILE.exists():
             history = json.loads(HISTORY_FILE.read_text())
 
+        # Enrich positions with live Data API prices
+        wallet = _config.funder_address or ""
+        if wallet and positions:
+            try:
+                import httpx
+
+                resp = httpx.get(
+                    "https://data-api.polymarket.com/positions",
+                    params={
+                        "user": wallet.lower(),
+                        "sizeThreshold": "0",
+                        "limit": "200",
+                    },
+                    timeout=10,
+                )
+                live_map = {}
+                for lp in resp.json():
+                    cid = lp.get("conditionId", "")
+                    if cid:
+                        live_map[cid] = lp
+                for pos in positions:
+                    lp = live_map.get(pos.get("market_id", ""))
+                    if lp:
+                        pos["cur_price"] = lp.get("curPrice", pos.get("entry_price", 0))
+                        pos["current_value"] = lp.get("currentValue", 0)
+                        pos["cash_pnl"] = lp.get("cashPnl", 0)
+                        pos["percent_pnl"] = lp.get("percentPnl", 0)
+            except Exception:
+                pass
+
         exposure = sum(p["size_usd"] for p in positions)
         wins = sum(1 for h in history if h.get("status") == "won")
         losses = sum(1 for h in history if h.get("status") == "lost")

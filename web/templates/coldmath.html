@@ -274,16 +274,45 @@ async function refresh() {
     if (!positions.length) { var d = document.createElement('div'); d.className='empty'; d.textContent='No open positions'; pb.appendChild(d); }
     else {
         pb.appendChild(makeTable(
-            [{label:'Market'},{label:'City'},{label:'Type'},{label:'NO Price',right:true,mono:true},{label:'Size',right:true,mono:true},{label:'Edge',right:true,mono:true},{label:'Resolves',right:true}],
-            positions.map(function(p) { return [
-                (p.question||'').substring(0,55),
-                p.city||'-',
-                makeBadge(p.direction, p.direction),
-                (p.entry_price*100).toFixed(1) + '\u00a2',
-                '$' + p.size_usd.toFixed(2),
-                '+' + (p.edge*100).toFixed(1) + '%',
-                resolveTag(p.target_date),
-            ]; })
+            [{label:'Market'},{label:'Type'},{label:'Price',right:true,mono:true},{label:'Cost',right:true,mono:true},{label:'Value',right:true,mono:true},{label:'P&L',right:true,mono:true},{label:'Resolves',right:true}],
+            positions.map(function(p) {
+                var entry = (p.entry_price||0)*100;
+                var cur = (p.cur_price||p.entry_price||0)*100;
+                var pnlVal = p.cash_pnl || 0;
+                var pnlPct = p.percent_pnl || 0;
+                var curVal = p.current_value || p.size_usd || 0;
+
+                var priceCell = document.createElement('span');
+                priceCell.className = 'mono';
+                priceCell.textContent = entry.toFixed(0) + '\u00a2 \u2192 ' + cur.toFixed(1) + '\u00a2';
+
+                var valCell = document.createElement('span');
+                valCell.className = 'mono';
+                valCell.textContent = '$' + curVal.toFixed(2);
+
+                var pnlCell = document.createElement('div');
+                var pnlMain = document.createElement('div');
+                pnlMain.className = pnlVal >= 0 ? 'green mono' : 'red mono';
+                pnlMain.textContent = pnlFmt(pnlVal);
+                pnlCell.appendChild(pnlMain);
+                if (pnlPct) {
+                    var pnlSub = document.createElement('div');
+                    pnlSub.style.fontSize = '10px';
+                    pnlSub.className = pnlVal >= 0 ? 'green' : 'red';
+                    pnlSub.textContent = (pnlPct >= 0 ? '+' : '') + pnlPct.toFixed(1) + '%';
+                    pnlCell.appendChild(pnlSub);
+                }
+
+                return [
+                    (p.question||'').substring(0,50),
+                    makeBadge(p.direction, p.direction),
+                    priceCell,
+                    '$' + p.size_usd.toFixed(2),
+                    valCell,
+                    pnlCell,
+                    resolveTag(p.target_date),
+                ];
+            })
         ));
     }
 
