@@ -442,7 +442,7 @@ def fetch_nws_forecast(
 _forecast_cache: dict[str, tuple[list[float], float]] = {}
 _FORECAST_CACHE_TTL: float = 7200.0  # 2 hours
 _last_api_call: float = 0.0
-_API_RATE_DELAY: float = 0.4  # seconds between API calls
+_API_RATE_DELAY: float = 1.0  # seconds between API calls (Open-Meteo free tier)
 
 
 def _rate_limit() -> None:

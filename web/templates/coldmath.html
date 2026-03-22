@@ -231,7 +231,15 @@ async function refresh() {
     $('sTradesInfo').textContent = data.total_trades ? (data.total_trades || 0) + ' resolved' : '-';
 
     $('sSignals').textContent = data.signals_count || 0;
-    $('sLastScan').textContent = data.last_scan ? 'Last: ' + data.last_scan : 'Not scanned';
+    var ss = data.scan_stats;
+    if (ss) {
+        var scanInfo = ss.forecasts_ok + '/' + (ss.forecasts_ok + ss.forecasts_failed) + ' forecasts';
+        if (ss.forecasts_failed > 0) scanInfo += ' (' + ss.forecasts_failed + ' failed)';
+        $('sLastScan').textContent = scanInfo;
+        $('sLastScan').className = 'stat-sub' + (ss.status === 'error' ? ' red' : ss.status === 'degraded' ? ' yellow' : '');
+    } else {
+        $('sLastScan').textContent = data.last_scan ? 'Last: ' + data.last_scan : 'Not scanned';
+    }
     $('sEdge').textContent = data.avg_edge ? '+' + (data.avg_edge * 100).toFixed(1) + '%' : '-';
     $('sTodayTrades').textContent = (data.today_trades || 0) + ' today';
 
@@ -247,7 +255,9 @@ async function refresh() {
         var dot = document.createElement('span');
         dot.className = 'pulse-dot';
         si.appendChild(dot);
-        si.appendChild(document.createTextNode(' Next scan in ' + (data.next_scan_in || '...')));
+        var now = new Date();
+        var timeStr = now.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+        si.appendChild(document.createTextNode(' Next scan in ' + (data.next_scan_in || '...') + ' (' + timeStr + ')'));
     } else {
         mb.textContent = 'IDLE';
         mb.className = 'mode-badge mode-idle';
@@ -273,6 +283,7 @@ async function refresh() {
     $('posCount').textContent = positions.length;
     if (!positions.length) { var d = document.createElement('div'); d.className='empty'; d.textContent='No open positions'; pb.appendChild(d); }
     else {
+        positions.sort(function(a, b) { return (a.target_date||'9999').localeCompare(b.target_date||'9999'); });
         pb.appendChild(makeTable(
             [{label:'Market'},{label:'Type'},{label:'Price',right:true,mono:true},{label:'Cost',right:true,mono:true},{label:'Value',right:true,mono:true},{label:'P&L',right:true,mono:true},{label:'Resolves',right:true}],
             positions.map(function(p) {
@@ -303,11 +314,13 @@ async function refresh() {
                     pnlCell.appendChild(pnlSub);
                 }
 
+                var realCost = p.initial_value || p.size_usd || 0;
+
                 return [
                     (p.question||'').substring(0,50),
-                    makeBadge(p.direction, p.direction),
+                    p.direction ? makeBadge(p.direction, p.direction) : '-',
                     priceCell,
-                    '$' + p.size_usd.toFixed(2),
+                    '$' + realCost.toFixed(2),
                     valCell,
                     pnlCell,
                     resolveTag(p.target_date),
@@ -375,9 +388,16 @@ async function runRedeem() {
 }
 
 async function runScan() {
+    var btn = document.querySelector('[onclick="runScan()"]');
+    btn.disabled = true;
+    btn.textContent = 'Scanning...';
+    btn.style.opacity = '0.6';
     addLog('Scanning markets...', 'info');
     var r = await fetchJSON('/api/scan', {method:'POST'});
     if (r) addLog(r.signals_count + ' signals found, ' + r.trades_made + ' trades executed', 'trade');
+    btn.disabled = false;
+    btn.textContent = 'Scan Now';
+    btn.style.opacity = '1';
     setTimeout(refresh, 1000);
 }
 

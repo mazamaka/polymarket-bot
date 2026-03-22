@@ -300,10 +300,15 @@ class ScanResult:
     edge: float  # model_prob_no - market_price_no
 
 
-def scan_weather_markets(config: BotConfig) -> list[ScanResult]:
-    """Сканировать Polymarket на weather маркеты с edge для NO."""
+def scan_weather_markets(config: BotConfig) -> tuple[list[ScanResult], dict]:
+    """Сканировать Polymarket на weather маркеты с edge для NO.
+
+    Returns:
+        Tuple of (results, scan_stats).
+    """
     api = PolymarketAPI()
     results: list[ScanResult] = []
+    forecast_failed = 0
 
     try:
         markets = api.get_active_markets(
@@ -338,6 +343,7 @@ def scan_weather_markets(config: BotConfig) -> list[ScanResult]:
                 info.lat, info.lon, info.target_date, info.temp_type, city=info.city
             )
             if len(temps) < config.min_ensemble_members:
+                forecast_failed += 1
                 continue
 
             scanned += 1
@@ -384,18 +390,27 @@ def scan_weather_markets(config: BotConfig) -> list[ScanResult]:
             )
 
         logger.info(
-            "Scan: %d weather markets found, %d with forecast, %d with edge",
+            "Scan: %d weather markets, %d forecasts OK, %d failed, %d signals",
             weather_found,
             scanned,
+            forecast_failed,
             len(results),
         )
 
     finally:
         api.close()
 
-    # Sort by edge (best first)
     results.sort(key=lambda r: r.edge, reverse=True)
-    return results
+    stats = {
+        "weather_markets": weather_found,
+        "forecasts_ok": scanned,
+        "forecasts_failed": forecast_failed,
+        "signals": len(results),
+        "status": "ok"
+        if forecast_failed == 0
+        else ("degraded" if scanned > 0 else "error"),
+    }
+    return results, stats
 
 
 # ── Display ─────────────────────────────────────────────────────────────────
@@ -440,6 +455,28 @@ def execute_trades(
     """Исполнить сделки по результатам сканирования. Returns count of trades made."""
     positions = load_positions()
     existing_markets = {p["market_id"] for p in positions}
+
+    # Also check on-chain positions to avoid duplicates with other bots
+    if not paper and config.funder_address:
+        try:
+            import httpx
+
+            resp = httpx.get(
+                "https://data-api.polymarket.com/positions",
+                params={
+                    "user": config.funder_address.lower(),
+                    "sizeThreshold": "0",
+                    "limit": "200",
+                },
+                timeout=10,
+            )
+            for lp in resp.json():
+                cid = lp.get("conditionId", "")
+                if cid:
+                    existing_markets.add(cid)
+        except Exception:
+            pass
+
     current_exposure = sum(p["size_usd"] for p in positions)
 
     traded = 0
@@ -795,6 +832,7 @@ def create_web_app() -> "FastAPI":
         "trader": None,
         "stop_event": None,
         "redeem_service": None,
+        "scan_stats": None,
     }
 
     _config = BotConfig(
@@ -824,13 +862,15 @@ def create_web_app() -> "FastAPI":
 
     @app.get("/api/status")
     async def status(_user: str = Depends(verify_auth)):
-        positions = load_positions()
+        bot_positions = load_positions()
+        bot_market_ids = {p["market_id"] for p in bot_positions}
         history = []
         if HISTORY_FILE.exists():
             history = json.loads(HISTORY_FILE.read_text())
 
-        # Fetch live data from Data API (single request for positions + portfolio)
+        # Build display positions from Data API (all wallet positions)
         wallet = _config.funder_address or ""
+        positions = []
         portfolio_value = 0
         if wallet:
             try:
@@ -840,32 +880,73 @@ def create_web_app() -> "FastAPI":
                     "https://data-api.polymarket.com/positions",
                     params={
                         "user": wallet.lower(),
-                        "sizeThreshold": "0",
+                        "sizeThreshold": "0.1",
                         "limit": "200",
                     },
                     timeout=10,
                 )
                 live_data = resp.json()
-                live_map = {}
-                for lp in live_data:
-                    cid = lp.get("conditionId", "")
-                    if cid:
-                        live_map[cid] = lp
                 portfolio_value = sum(
                     float(lp.get("currentValue", 0)) for lp in live_data
                 )
 
-                for pos in positions:
-                    lp = live_map.get(pos.get("market_id", ""))
-                    if lp:
-                        pos["cur_price"] = lp.get("curPrice", pos.get("entry_price", 0))
-                        pos["current_value"] = lp.get("currentValue", 0)
-                        pos["cash_pnl"] = lp.get("cashPnl", 0)
-                        pos["percent_pnl"] = lp.get("percentPnl", 0)
-            except Exception:
-                pass
+                from analyzer.weather import parse_weather_question, MONTH_MAP
 
-        exposure = sum(p["size_usd"] for p in positions)
+                for lp in live_data:
+                    cid = lp.get("conditionId", "")
+                    if not cid or lp.get("redeemable"):
+                        continue
+                    bot_pos = next(
+                        (p for p in bot_positions if p.get("market_id") == cid), None
+                    )
+                    # Parse city/direction/date from title if no bot data
+                    city = ""
+                    direction = ""
+                    target_date = ""
+                    if bot_pos:
+                        city = bot_pos.get("city", "")
+                        direction = bot_pos.get("direction", "")
+                        target_date = bot_pos.get("target_date", "")
+                    else:
+                        parsed = parse_weather_question(lp.get("title", ""))
+                        if parsed:
+                            city = parsed.get("city", "")
+                            direction = parsed.get("direction", "")
+                            ds = parsed.get("date_str", "")
+                            if ds:
+                                parts = ds.strip().split()
+                                if len(parts) >= 2:
+                                    mon = MONTH_MAP.get(parts[0].lower())
+                                    if mon:
+                                        try:
+                                            target_date = (
+                                                f"2026-{mon:02d}-{int(parts[1]):02d}"
+                                            )
+                                        except ValueError:
+                                            pass
+
+                    positions.append(
+                        {
+                            "market_id": cid,
+                            "question": lp.get("title", ""),
+                            "city": city,
+                            "direction": direction,
+                            "target_date": target_date,
+                            "entry_price": lp.get("avgPrice", 0),
+                            "cur_price": lp.get("curPrice", 0),
+                            "size_usd": lp.get("initialValue", 0),
+                            "current_value": lp.get("currentValue", 0),
+                            "initial_value": lp.get("initialValue", 0),
+                            "cash_pnl": lp.get("cashPnl", 0),
+                            "percent_pnl": lp.get("percentPnl", 0),
+                            "edge": bot_pos.get("edge", 0) if bot_pos else 0,
+                            "source": "coldmath" if cid in bot_market_ids else "other",
+                        }
+                    )
+            except Exception:
+                positions = bot_positions
+
+        exposure = sum(p.get("initial_value", p.get("size_usd", 0)) for p in positions)
         wins = sum(1 for h in history if h.get("status") == "won")
         losses = sum(1 for h in history if h.get("status") == "lost")
         total_pnl = sum(h.get("pnl", 0) for h in history)
@@ -911,6 +992,7 @@ def create_web_app() -> "FastAPI":
             "avg_edge": avg_edge,
             "cash_balance": cash,
             "portfolio_value": portfolio_value,
+            "scan_stats": _state.get("scan_stats"),
             "config": {
                 "trade_size_usd": _config.trade_size_usd,
                 "max_positions": _config.max_positions,
@@ -925,10 +1007,11 @@ def create_web_app() -> "FastAPI":
 
     def _run_scan_and_trade() -> int:
         """Shared scan+trade logic. Returns trades_made."""
-        results = scan_weather_markets(_config)
+        results, scan_stats = scan_weather_markets(_config)
         with _state_lock:
             _state["signals"] = _signals_to_dicts(results)
             _state["last_scan"] = datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
+            _state["scan_stats"] = scan_stats
 
         trades_made = 0
         if _state["mode"] != "scan":
@@ -984,24 +1067,46 @@ def create_web_app() -> "FastAPI":
             _state["stop_event"] = stop_evt
             _state["bot_running"] = True
 
+        def _seconds_until_next_slot(interval_min: int) -> float:
+            """Calculate seconds until next fixed time slot (e.g. :00, :30)."""
+            now = datetime.now(tz=timezone.utc)
+            minute = now.minute
+            second = now.second + now.microsecond / 1e6
+            slots = list(range(0, 60, interval_min))  # e.g. [0, 30]
+            for slot in slots:
+                if minute < slot:
+                    return (slot - minute) * 60 - second
+            # Next slot is in the next hour
+            return (60 - minute + slots[0]) * 60 - second
+
         def bot_loop():
+            interval = _state["scan_interval_min"]
+            wait_sec = _seconds_until_next_slot(interval)
             logger.info(
-                "Bot started (%s, mode=%s, interval=%dm)",
+                "Bot started (%s, mode=%s, interval=%dm, first scan in %dm %ds)",
                 source,
                 _state["mode"],
-                _state["scan_interval_min"],
+                interval,
+                int(wait_sec // 60),
+                int(wait_sec % 60),
             )
+
+            # Wait until next fixed slot before first scan
+            with _state_lock:
+                _state["next_scan_at"] = time.time() + wait_sec
+            if stop_evt.wait(wait_sec):
+                return
+
             while not stop_evt.is_set():
                 try:
                     _run_scan_and_trade()
                 except Exception as e:
                     logger.error("Bot loop error: %s", e)
 
+                wait_sec = _seconds_until_next_slot(interval)
                 with _state_lock:
-                    _state["next_scan_at"] = (
-                        time.time() + _state["scan_interval_min"] * 60
-                    )
-                stop_evt.wait(_state["scan_interval_min"] * 60)
+                    _state["next_scan_at"] = time.time() + wait_sec
+                stop_evt.wait(wait_sec)
 
             with _state_lock:
                 _state["bot_running"] = False
@@ -1117,7 +1222,7 @@ def main() -> None:
         check_positions(config)
 
         # Scan for new opportunities
-        results = scan_weather_markets(config)
+        results, _stats = scan_weather_markets(config)
         print_scan_results(results)
 
         if args.mode != "scan":
