@@ -445,24 +445,24 @@ def execute_trades(
     traded = 0
 
     # Check live balance before trading (on-chain USDC)
+    available_cash = float("inf")  # unlimited for paper
     if not paper and trader:
         try:
-            cash = _get_usdc_balance(config.funder_address)
-            if cash < config.trade_size_usd:
+            available_cash = _get_usdc_balance(config.funder_address)
+            if available_cash < config.trade_size_usd:
                 logger.info(
                     "SKIP trading: insufficient balance $%.2f < trade size $%.2f",
-                    cash,
+                    available_cash,
                     config.trade_size_usd,
                 )
                 return 0
-            logger.info("Balance check OK: $%.2f available", cash)
+            logger.info("Balance check OK: $%.2f available", available_cash)
         except Exception as e:
             logger.warning("Balance check failed (proceeding): %s", e)
 
     for r in results:
         # Skip if already have position
         if r.market.condition_id in existing_markets:
-            logger.info("SKIP (already have): %s", r.market.question[:50])
             continue
 
         # Check limits
@@ -472,6 +472,11 @@ def execute_trades(
 
         if current_exposure + config.trade_size_usd > config.max_total_exposure:
             logger.info("Max exposure reached ($%.2f)", config.max_total_exposure)
+            break
+
+        # Check remaining cash (prevents 'not enough balance' spam)
+        if available_cash < config.trade_size_usd:
+            logger.info("Insufficient cash ($%.2f), stopping", available_cash)
             break
 
         # Determine actual price — use market NO price
@@ -532,6 +537,7 @@ def execute_trades(
         positions.append(position)
         existing_markets.add(r.market.condition_id)
         current_exposure += config.trade_size_usd
+        available_cash -= config.trade_size_usd
         traded += 1
 
     save_positions(positions)
