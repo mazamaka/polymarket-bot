@@ -1056,6 +1056,10 @@ def create_web_app() -> "FastAPI":
 
         return trades_made
 
+    @app.get("/api/logs")
+    async def api_logs(_user: str = Depends(verify_auth)):
+        return {"logs": _log_buffer[-50:]}
+
     @app.post("/api/redeem")
     async def api_redeem(_user: str = Depends(verify_auth)):
         import asyncio

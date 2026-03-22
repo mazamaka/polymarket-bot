@@ -377,31 +377,7 @@ async function refresh() {
         ));
     }
 
-    // Server logs — filter noise, keep useful
-    var lb = $('logBox');
-    lb.textContent = '';
-    var serverLogs = data.logs || [];
-    var shown = 0;
-    serverLogs.forEach(function(log) {
-        var m = log.msg || '';
-        // Skip HTTP request noise
-        if (m.indexOf('HTTP Request') >= 0) return;
-        if (m.indexOf('HTTP/1.1') >= 0) return;
-        var div = document.createElement('div');
-        var cls = '';
-        if (log.level === 'WARNING') cls = 'yellow';
-        if (log.level === 'ERROR') cls = 'red';
-        if (m.indexOf('BUY') >= 0 || m.indexOf('Traded') >= 0 || m.indexOf('Order posted') >= 0) cls = 'green';
-        if (m.indexOf('redeem') >= 0 && m.indexOf('no redeemable') < 0) cls = 'green';
-        if (m.indexOf('WON') >= 0) cls = 'green';
-        if (m.indexOf('LOST') >= 0) cls = 'red';
-        if (cls) div.className = cls;
-        div.textContent = log.t + '  ' + m;
-        lb.appendChild(div);
-        shown++;
-    });
-    $('logCount').textContent = shown;
-    lb.scrollTop = lb.scrollHeight;
+    // Logs rendered by refreshLogs() separately
 }
 
 async function runRedeem() {
@@ -457,8 +433,41 @@ async function saveSettings() {
     toggleSettings();
 }
 
+async function refreshLogs() {
+    var data = await fetchJSON('/api/logs');
+    if (!data) return;
+    var lb = $('logBox');
+    var serverLogs = data.logs || [];
+    var newCount = serverLogs.length;
+    var curCount = parseInt($('logCount').textContent || '0');
+    if (newCount === curCount) return;
+    lb.textContent = '';
+    var shown = 0;
+    serverLogs.forEach(function(log) {
+        var m = log.msg || '';
+        if (m.indexOf('HTTP Request') >= 0) return;
+        if (m.indexOf('HTTP/1.1') >= 0) return;
+        var div = document.createElement('div');
+        var cls = '';
+        if (log.level === 'WARNING') cls = 'yellow';
+        if (log.level === 'ERROR') cls = 'red';
+        if (m.indexOf('BUY') >= 0 || m.indexOf('Traded') >= 0 || m.indexOf('Order posted') >= 0) cls = 'green';
+        if (m.indexOf('redeem') >= 0 && m.indexOf('no redeemable') < 0) cls = 'green';
+        if (m.indexOf('WON') >= 0) cls = 'green';
+        if (m.indexOf('LOST') >= 0) cls = 'red';
+        if (cls) div.className = cls;
+        div.textContent = log.t + '  ' + m;
+        lb.appendChild(div);
+        shown++;
+    });
+    $('logCount').textContent = shown;
+    lb.scrollTop = lb.scrollHeight;
+}
+
 refresh();
-setInterval(refresh, 5000);
+refreshLogs();
+setInterval(refresh, 10000);
+setInterval(refreshLogs, 3000);
 </script>
 </body>
 </html>
