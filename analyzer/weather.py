@@ -530,7 +530,7 @@ def fetch_ensemble_forecast(
                         ENSEMBLE_API_URL,
                         params=ensemble_params,
                         timeout=20,
-                        proxy=f"http://{proxy}",
+                        proxy=proxy if proxy.startswith("http") else f"http://{proxy}",
                     )
                     resp.raise_for_status()
                     _parse_ensemble_response(resp)
