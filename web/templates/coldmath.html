@@ -374,6 +374,20 @@ async function refresh() {
             })
         ));
     }
+
+    // Server logs
+    var lb = $('logBox');
+    lb.textContent = '';
+    var serverLogs = data.logs || [];
+    serverLogs.forEach(function(log) {
+        var div = document.createElement('div');
+        var cls = log.level === 'WARNING' ? 'yellow' : log.level === 'ERROR' ? 'red' : '';
+        if (log.msg && (log.msg.indexOf('BUY') >= 0 || log.msg.indexOf('Traded') >= 0 || log.msg.indexOf('redeem') >= 0)) cls = 'green';
+        if (cls) div.className = cls;
+        div.textContent = log.t + '  ' + log.msg;
+        lb.appendChild(div);
+    });
+    lb.scrollTop = lb.scrollHeight;
 }
 
 async function runRedeem() {

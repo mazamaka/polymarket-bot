@@ -807,6 +807,24 @@ def create_web_app() -> "FastAPI":
     from pydantic import Field
 
     app = FastAPI(title="ColdMath Weather Bot")
+
+    # In-memory log buffer for dashboard
+    _log_buffer: list[dict] = []
+    _LOG_MAX = 200
+
+    class DashboardLogHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            _log_buffer.append(
+                {
+                    "t": datetime.now(tz=timezone.utc).strftime("%H:%M:%S"),
+                    "level": record.levelname,
+                    "msg": record.getMessage(),
+                }
+            )
+            if len(_log_buffer) > _LOG_MAX:
+                del _log_buffer[: len(_log_buffer) - _LOG_MAX]
+
+    logging.getLogger("coldmath").addHandler(DashboardLogHandler())
     security = HTTPBasic()
 
     _api_user = os.environ.get("DASHBOARD_USER", "admin")
@@ -993,6 +1011,7 @@ def create_web_app() -> "FastAPI":
             "cash_balance": cash,
             "portfolio_value": portfolio_value,
             "scan_stats": _state.get("scan_stats"),
+            "logs": _log_buffer[-50:],
             "config": {
                 "trade_size_usd": _config.trade_size_usd,
                 "max_positions": _config.max_positions,
