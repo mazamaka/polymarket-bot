@@ -487,37 +487,44 @@ def fetch_ensemble_forecast(
     daily_var = "temperature_2m_max" if temp_type == "highest" else "temperature_2m_min"
     all_temps: list[float] = []
 
-    # 1. Open-Meteo Ensemble — ВСЕ модели в одном запросе (4x меньше API calls)
-    _rate_limit()
-    try:
-        resp = httpx.get(
-            ENSEMBLE_API_URL,
-            params={
-                "latitude": lat,
-                "longitude": lon,
-                "models": "gfs_seamless,ecmwf_ifs025,icon_seamless,gem_global",
-                "daily": daily_var,
-                "temperature_unit": "fahrenheit",
-                "start_date": date_str,
-                "end_date": date_str,
-                "timezone": "auto",
-            },
-            timeout=20,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        daily = data.get("daily", {})
-        for key, values in daily.items():
-            if key.startswith(f"{daily_var}_member") and values:
-                val = values[0]
+    # 1. Open-Meteo Ensemble — ВСЕ модели в одном запросе, retry при 429
+    ensemble_params = {
+        "latitude": lat,
+        "longitude": lon,
+        "models": "gfs_seamless,ecmwf_ifs025,icon_seamless,gem_global",
+        "daily": daily_var,
+        "temperature_unit": "fahrenheit",
+        "start_date": date_str,
+        "end_date": date_str,
+        "timezone": "auto",
+    }
+    for attempt in range(3):
+        _rate_limit()
+        try:
+            resp = httpx.get(ENSEMBLE_API_URL, params=ensemble_params, timeout=20)
+            if resp.status_code == 429:
+                wait = 10 * (attempt + 1)
+                logger.warning(
+                    "Open-Meteo 429, retry in %ds (attempt %d/3)", wait, attempt + 1
+                )
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            daily = data.get("daily", {})
+            for key, values in daily.items():
+                if key.startswith(f"{daily_var}_member") and values:
+                    val = values[0]
+                    if val is not None:
+                        all_temps.append(float(val))
+            if not all_temps and daily_var in daily and daily[daily_var]:
+                val = daily[daily_var][0]
                 if val is not None:
                     all_temps.append(float(val))
-        if not all_temps and daily_var in daily and daily[daily_var]:
-            val = daily[daily_var][0]
-            if val is not None:
-                all_temps.append(float(val))
-    except Exception as e:
-        logger.warning("Open-Meteo ensemble error for %s: %s", date_str, e)
+            break  # success
+        except Exception as e:
+            if attempt == 2:
+                logger.warning("Open-Meteo ensemble error for %s: %s", date_str, e)
 
     # 2. Fallback: Open-Meteo deterministic (разные модели = "бедный ensemble")
     if len(all_temps) < 5:
