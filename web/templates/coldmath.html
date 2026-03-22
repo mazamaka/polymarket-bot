@@ -452,6 +452,15 @@ function isHttpNoise(msg) {
     return msg.indexOf('HTTP Request') >= 0 || msg.indexOf('HTTP/1.1') >= 0;
 }
 
+function utcToLocal(utcTime) {
+    var parts = utcTime.split(':');
+    if (parts.length < 3) return utcTime;
+    var now = new Date();
+    var d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(),
+        parseInt(parts[0]), parseInt(parts[1]), parseInt(parts[2])));
+    return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+}
+
 function appendLogEntry(log) {
     var m = log.msg || '';
     if (isHttpNoise(m)) return;
@@ -459,7 +468,7 @@ function appendLogEntry(log) {
     var div = document.createElement('div');
     var cls = classifyLog(log);
     if (cls) div.className = cls;
-    div.textContent = log.t + '  ' + m;
+    div.textContent = utcToLocal(log.t) + '  ' + m;
     lb.appendChild(div);
     _logCount++;
     $('logCount').textContent = _logCount;
@@ -536,7 +545,7 @@ async function fallbackRefreshLogs() {
 }
 
 refresh();
-setInterval(refresh, 10000);
+setInterval(refresh, 30000);
 connectLogWs();
 </script>
 </body>
