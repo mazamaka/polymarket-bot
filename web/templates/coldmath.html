@@ -142,6 +142,7 @@
 
 <script>
 /* All rendering uses textContent and safe DOM APIs - no innerHTML with user data */
+/*__WS_CREDS__*/
 const API = '';
 function $(id) { return document.getElementById(id); }
 
@@ -433,41 +434,110 @@ async function saveSettings() {
     toggleSettings();
 }
 
-async function refreshLogs() {
+/* --- Log rendering helpers --- */
+var _logCount = 0;
+
+function classifyLog(log) {
+    var m = log.msg || '';
+    if (log.level === 'WARNING') return 'yellow';
+    if (log.level === 'ERROR') return 'red';
+    if (m.indexOf('BUY') >= 0 || m.indexOf('Traded') >= 0 || m.indexOf('Order posted') >= 0) return 'green';
+    if (m.indexOf('redeem') >= 0 && m.indexOf('no redeemable') < 0) return 'green';
+    if (m.indexOf('WON') >= 0) return 'green';
+    if (m.indexOf('LOST') >= 0) return 'red';
+    return '';
+}
+
+function isHttpNoise(msg) {
+    return msg.indexOf('HTTP Request') >= 0 || msg.indexOf('HTTP/1.1') >= 0;
+}
+
+function appendLogEntry(log) {
+    var m = log.msg || '';
+    if (isHttpNoise(m)) return;
+    var lb = $('logBox');
+    var div = document.createElement('div');
+    var cls = classifyLog(log);
+    if (cls) div.className = cls;
+    div.textContent = log.t + '  ' + m;
+    lb.appendChild(div);
+    _logCount++;
+    $('logCount').textContent = _logCount;
+    // Keep max 200 entries in DOM
+    while (lb.children.length > 200) { lb.removeChild(lb.firstChild); }
+    lb.scrollTop = lb.scrollHeight;
+}
+
+/* --- WebSocket for real-time logs --- */
+var _wsReconnectDelay = 1000;
+var _wsMaxDelay = 15000;
+var _ws = null;
+
+function connectLogWs() {
+    if (!window._wsUser) {
+        // No credentials injected, fallback to polling
+        setInterval(fallbackRefreshLogs, 3000);
+        return;
+    }
+
+    var wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var wsUrl = wsProto + '//' + location.host + '/ws/logs'
+        + '?user=' + encodeURIComponent(window._wsUser)
+        + '&pass=' + encodeURIComponent(window._wsPass);
+
+    _ws = new WebSocket(wsUrl);
+
+    _ws.onopen = function() {
+        _wsReconnectDelay = 1000;
+        // Clear existing logs - server sends history on connect
+        $('logBox').textContent = '';
+        _logCount = 0;
+    };
+
+    _ws.onmessage = function(evt) {
+        try {
+            var log = JSON.parse(evt.data);
+            appendLogEntry(log);
+        } catch(e) {}
+    };
+
+    _ws.onclose = function(evt) {
+        _ws = null;
+        if (evt.code === 4001) {
+            // Auth failed, clear stored creds and fallback
+            sessionStorage.removeItem('ws_user');
+            sessionStorage.removeItem('ws_pass');
+            window._wsUser = '';
+            setInterval(fallbackRefreshLogs, 3000);
+            return;
+        }
+        // Auto-reconnect with backoff
+        setTimeout(function() {
+            _wsReconnectDelay = Math.min(_wsReconnectDelay * 1.5, _wsMaxDelay);
+            connectLogWs();
+        }, _wsReconnectDelay);
+    };
+
+    _ws.onerror = function() {
+        if (_ws) _ws.close();
+    };
+}
+
+async function fallbackRefreshLogs() {
     var data = await fetchJSON('/api/logs');
     if (!data) return;
     var lb = $('logBox');
     var serverLogs = data.logs || [];
     var newCount = serverLogs.length;
-    var curCount = parseInt($('logCount').textContent || '0');
-    if (newCount === curCount) return;
+    if (newCount === _logCount) return;
     lb.textContent = '';
-    var shown = 0;
-    serverLogs.forEach(function(log) {
-        var m = log.msg || '';
-        if (m.indexOf('HTTP Request') >= 0) return;
-        if (m.indexOf('HTTP/1.1') >= 0) return;
-        var div = document.createElement('div');
-        var cls = '';
-        if (log.level === 'WARNING') cls = 'yellow';
-        if (log.level === 'ERROR') cls = 'red';
-        if (m.indexOf('BUY') >= 0 || m.indexOf('Traded') >= 0 || m.indexOf('Order posted') >= 0) cls = 'green';
-        if (m.indexOf('redeem') >= 0 && m.indexOf('no redeemable') < 0) cls = 'green';
-        if (m.indexOf('WON') >= 0) cls = 'green';
-        if (m.indexOf('LOST') >= 0) cls = 'red';
-        if (cls) div.className = cls;
-        div.textContent = log.t + '  ' + m;
-        lb.appendChild(div);
-        shown++;
-    });
-    $('logCount').textContent = shown;
-    lb.scrollTop = lb.scrollHeight;
+    _logCount = 0;
+    serverLogs.forEach(function(log) { appendLogEntry(log); });
 }
 
 refresh();
-refreshLogs();
 setInterval(refresh, 10000);
-setInterval(refreshLogs, 3000);
+connectLogWs();
 </script>
 </body>
 </html>

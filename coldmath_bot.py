@@ -25,8 +25,10 @@ Usage:
 """
 
 import argparse
+import asyncio
 import json
 import logging
+import logging.handlers
 import os
 import sys
 import threading
@@ -800,7 +802,7 @@ def create_web_app() -> "FastAPI":
     """Create FastAPI dashboard app."""
     import secrets
 
-    from fastapi import Depends, FastAPI, HTTPException
+    from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
     from fastapi.responses import HTMLResponse
     from fastapi.security import HTTPBasic, HTTPBasicCredentials
     from pydantic import BaseModel as PydanticBaseModel
@@ -812,19 +814,67 @@ def create_web_app() -> "FastAPI":
     _log_buffer: list[dict] = []
     _LOG_MAX = 200
 
+    # WebSocket broadcast for real-time logs
+    _ws_clients: set[WebSocket] = set()
+    _ws_loop: asyncio.AbstractEventLoop | None = None
+
     class DashboardLogHandler(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
-            _log_buffer.append(
-                {
-                    "t": datetime.now(tz=timezone.utc).strftime("%H:%M:%S"),
-                    "level": record.levelname,
-                    "msg": record.getMessage(),
-                }
-            )
+            entry = {
+                "t": datetime.now(tz=timezone.utc).strftime("%H:%M:%S"),
+                "level": record.levelname,
+                "msg": record.getMessage(),
+            }
+            _log_buffer.append(entry)
             if len(_log_buffer) > _LOG_MAX:
                 del _log_buffer[: len(_log_buffer) - _LOG_MAX]
+            # Broadcast to WebSocket clients (fire-and-forget from any thread)
+            if _ws_clients and _ws_loop is not None:
+                try:
+                    _ws_loop.call_soon_threadsafe(
+                        asyncio.ensure_future,
+                        _broadcast_log(entry),
+                    )
+                except RuntimeError:
+                    pass  # loop closed
+
+    async def _broadcast_log(entry: dict) -> None:
+        """Send log entry to all connected WebSocket clients."""
+        if not _ws_clients:
+            return
+        payload = json.dumps(entry)
+        closed: list[WebSocket] = []
+        for ws in _ws_clients.copy():
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                closed.append(ws)
+        for ws in closed:
+            _ws_clients.discard(ws)
 
     logging.getLogger("coldmath").addHandler(DashboardLogHandler())
+
+    # File handler with rotation (filter HTTP request noise)
+    class _HttpNoiseFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            if "HTTP Request" in msg or "HTTP/1.1" in msg:
+                return False
+            return True
+
+    _log_file = Path("/app/data/coldmath.log")
+    _log_file.parent.mkdir(parents=True, exist_ok=True)
+    _file_handler = logging.handlers.RotatingFileHandler(
+        _log_file,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    _file_handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"),
+    )
+    _file_handler.addFilter(_HttpNoiseFilter())
+    logging.getLogger("coldmath").addHandler(_file_handler)
     security = HTTPBasic()
 
     _api_user = os.environ.get("DASHBOARD_USER", "admin")
@@ -874,9 +924,23 @@ def create_web_app() -> "FastAPI":
         mode: str | None = Field(None, pattern="^(scan|paper|live)$")
 
     @app.get("/", response_class=HTMLResponse)
-    async def dashboard(_user: str = Depends(verify_auth)):
+    async def dashboard(
+        credentials: HTTPBasicCredentials = Depends(security),
+    ):
+        if not (
+            secrets.compare_digest(credentials.username, _api_user)
+            and secrets.compare_digest(credentials.password, _api_pass)
+        ):
+            raise HTTPException(status_code=401, headers={"WWW-Authenticate": "Basic"})
         tpl = Path(__file__).parent / "web" / "templates" / "coldmath.html"
-        return HTMLResponse(tpl.read_text())
+        html = tpl.read_text()
+        # Inject credentials for WebSocket auth (same user already authenticated)
+        html = html.replace(
+            "/*__WS_CREDS__*/",
+            f"window._wsUser={json.dumps(credentials.username)};"
+            f"window._wsPass={json.dumps(credentials.password)};",
+        )
+        return HTMLResponse(html)
 
     @app.get("/api/status")
     async def status(_user: str = Depends(verify_auth)):
@@ -1060,10 +1124,38 @@ def create_web_app() -> "FastAPI":
     async def api_logs(_user: str = Depends(verify_auth)):
         return {"logs": _log_buffer[-50:]}
 
+    @app.websocket("/ws/logs")
+    async def ws_logs(ws: WebSocket):
+        """WebSocket endpoint for real-time log streaming.
+
+        Auth via query params: ?user=X&pass=Y
+        """
+        user = ws.query_params.get("user", "")
+        passwd = ws.query_params.get("pass", "")
+        if not (
+            secrets.compare_digest(user, _api_user)
+            and secrets.compare_digest(passwd, _api_pass)
+        ):
+            await ws.accept()
+            await ws.close(code=4001, reason="Unauthorized")
+            return
+
+        await ws.accept()
+        _ws_clients.add(ws)
+        try:
+            # Send recent logs on connect
+            for entry in _log_buffer[-50:]:
+                await ws.send_text(json.dumps(entry))
+            # Keep connection alive, wait for client disconnect
+            while True:
+                await ws.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            _ws_clients.discard(ws)
+
     @app.post("/api/redeem")
     async def api_redeem(_user: str = Depends(verify_auth)):
-        import asyncio
-
         def _do_redeem() -> int:
             with _state_lock:
                 if not _state["redeem_service"]:
@@ -1075,8 +1167,6 @@ def create_web_app() -> "FastAPI":
 
     @app.post("/api/scan")
     async def api_scan(_user: str = Depends(verify_auth)):
-        import asyncio
-
         trades_made = await asyncio.to_thread(_run_scan_and_trade)
         return {"signals_count": len(_state["signals"]), "trades_made": trades_made}
 
@@ -1175,9 +1265,9 @@ def create_web_app() -> "FastAPI":
 
     @app.on_event("startup")
     async def _autostart_bot():
+        nonlocal _ws_loop
+        _ws_loop = asyncio.get_running_loop()
         if _state["mode"] in ("paper", "live"):
-            import asyncio
-
             await asyncio.sleep(2)
             _start_bot_loop("autostart")
 
