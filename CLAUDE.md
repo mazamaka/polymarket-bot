@@ -102,7 +102,7 @@ subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeou
 SSEListener(on_breaking_match=callback, on_log=logger)
 ```
 
-- Подключается к `news.maxbob.xyz/api/v1/stream?importance=high`
+- Подключается к News Intelligence SSE stream (`NEWS_SERVICE_URL/api/v1/stream?importance=high`)
 - Auto-reconnect с exponential backoff (1s → 30s)
 - Article deduplication (1h TTL)
 - Market cooldown (5 min — не ре-анализировать тот же рынок)
@@ -137,7 +137,7 @@ SSEListener(on_breaking_match=callback, on_log=logger)
 
 ## Web Dashboard
 
-- **URL**: https://poly.maxbob.xyz/ (production)
+- **URL**: configured via reverse proxy (default port 8899)
 - **Порт**: 8899
 - **Auth**: basic auth middleware
 - **WebSocket**: real-time обновления portfolio, logs
@@ -155,21 +155,17 @@ SSEListener(on_breaking_match=callback, on_log=logger)
 
 ## Деплой
 
-- **Production**: https://poly.maxbob.xyz/
-- **Сервер**: 94.156.232.242 (admin)
-- **Путь**: `/opt/polymarket-bot/`
 - **Контейнер**: `polymarket-bot` (docker compose)
 - **Обновление**: `git pull && docker compose up -d --build`
 - **Claude credentials**: `~/.claude/.credentials.json` монтируется в контейнер
 
 ## Git
 
-- GitHub: `github.com/mazamaka321-rgb/polymarket-bot` (origin)
 - Ветка: `main`
 
 ## Зависимости от других сервисов
 
-- **News Intelligence** (`news.maxbob.xyz`) — SSE stream для breaking news, market context, economic calendar
+- **News Intelligence** (configured via `NEWS_SERVICE_URL` env var) — SSE stream для breaking news, market context, economic calendar
 - **Open-Meteo API** — погодные прогнозы для weather trading
 - **Polymarket Gamma API** — список рынков, цены
 - **Polymarket CLOB API** — исполнение ордеров (live mode)

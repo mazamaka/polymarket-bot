@@ -1,9 +1,9 @@
-"""Web search для обогащения контекста анализа рынков.
+"""Web search for enriching market analysis context.
 
-Источники (все используются для максимальной картины):
-1. News Intelligence Service (news.maxbob.xyz) — наш агрегатор
-2. Tavily — AI-оптимизированный поиск
-3. Google News — бесплатный RSS
+Sources (all used for maximum coverage):
+1. News Intelligence Service (configured via NEWS_SERVICE_URL env var) — news aggregator
+2. Tavily — AI-optimized search
+3. Google News — free RSS
 4. DuckDuckGo — fallback
 """
 

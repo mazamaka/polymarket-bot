@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     }
 
     # News Intelligence Service
-    news_service_url: str = "https://news.maxbob.xyz"
+    news_service_url: str = ""
 
     # SSE Listener (breaking news)
     sse_enabled: bool = True
