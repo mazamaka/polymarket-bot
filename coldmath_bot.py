@@ -1034,6 +1034,46 @@ def create_web_app() -> "FastAPI":
                 _state["mode"] = body.mode
         return {"status": "ok"}
 
+    # Auto-start bot loop if BOT_MODE is paper or live
+    @app.on_event("startup")
+    async def _autostart_bot():
+        if _state["mode"] in ("paper", "live"):
+            import asyncio
+
+            # Small delay to let uvicorn fully start
+            await asyncio.sleep(2)
+
+            stop_evt = threading.Event()
+            with _state_lock:
+                _state["stop_event"] = stop_evt
+                _state["bot_running"] = True
+
+            def bot_loop():
+                logger.info(
+                    "Bot auto-started (mode=%s, interval=%dm)",
+                    _state["mode"],
+                    _state["scan_interval_min"],
+                )
+                while not stop_evt.is_set():
+                    try:
+                        _run_scan_and_trade()
+                    except Exception as e:
+                        logger.error("Bot loop error: %s", e)
+
+                    with _state_lock:
+                        _state["next_scan_at"] = (
+                            time.time() + _state["scan_interval_min"] * 60
+                        )
+                    stop_evt.wait(_state["scan_interval_min"] * 60)
+
+                with _state_lock:
+                    _state["bot_running"] = False
+                logger.info("Bot loop stopped")
+
+            t = threading.Thread(target=bot_loop, daemon=True)
+            t.start()
+            logger.info("Bot auto-started on startup")
+
     return app
 
 
