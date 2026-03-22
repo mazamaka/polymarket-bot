@@ -94,8 +94,8 @@
     </div>
 
     <div class="stats">
-        <div class="stat"><div class="stat-label">Balance</div><div class="stat-val" id="sCash">$0</div><div class="stat-sub" id="sPortfolio">-</div></div>
-        <div class="stat"><div class="stat-label">Positions</div><div class="stat-val" id="sPositions">0</div><div class="stat-sub" id="sExposure">-</div></div>
+        <div class="stat"><div class="stat-label">Portfolio</div><div class="stat-val" id="sPortfolio">$0</div><div class="stat-sub" id="sCashSub">-</div></div>
+        <div class="stat"><div class="stat-label">Cash</div><div class="stat-val green" id="sCash">$0</div><div class="stat-sub" id="sPositionsSub">-</div></div>
         <div class="stat"><div class="stat-label">Total P&L</div><div class="stat-val" id="sPnl">$0</div><div class="stat-sub" id="sWinRate">-</div></div>
         <div class="stat"><div class="stat-label">Win Rate</div><div class="stat-val" id="sWinRateVal">-</div><div class="stat-sub" id="sTradesInfo">-</div></div>
         <div class="stat"><div class="stat-label">Signals</div><div class="stat-val blue" id="sSignals">0</div><div class="stat-sub" id="sLastScan">-</div></div>
@@ -212,11 +212,13 @@ async function refresh() {
     if (!data) return;
 
     var cash = data.cash_balance || 0;
+    var portfolioVal = data.portfolio_value || 0;
     var exposure = data.exposure || 0;
+    var totalPortfolio = cash + portfolioVal;
+    $('sPortfolio').textContent = '$' + totalPortfolio.toFixed(2);
+    $('sCashSub').textContent = '$' + cash.toFixed(2) + ' cash';
     $('sCash').textContent = '$' + cash.toFixed(2);
-    $('sPortfolio').textContent = '$' + (cash + exposure).toFixed(2) + ' portfolio';
-    $('sPositions').textContent = data.positions ? data.positions.length : 0;
-    $('sExposure').textContent = '$' + exposure.toFixed(2) + ' deployed';
+    $('sPositionsSub').textContent = (data.positions ? data.positions.length : 0) + ' positions open';
 
     var pnl = data.total_pnl || 0;
     $('sPnl').textContent = pnlFmt(pnl);

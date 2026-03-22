@@ -815,10 +815,37 @@ def create_web_app() -> "FastAPI":
             remaining = max(0, _state["next_scan_at"] - time.time())
             next_in = f"{int(remaining // 60)}m {int(remaining % 60)}s"
 
-        # Get cash balance from Data API
+        # Get balances: on-chain USDC (cash) + Data API (portfolio value)
         cash = 0
+        portfolio_value = 0
         wallet = _config.funder_address or ""
         if wallet:
+            try:
+                from web3 import Web3
+
+                w3 = Web3(Web3.HTTPProvider("https://polygon-bor.publicnode.com"))
+                usdc_abi = [
+                    {
+                        "inputs": [{"name": "account", "type": "address"}],
+                        "name": "balanceOf",
+                        "outputs": [{"name": "", "type": "uint256"}],
+                        "stateMutability": "view",
+                        "type": "function",
+                    }
+                ]
+                usdc = w3.eth.contract(
+                    address=Web3.to_checksum_address(
+                        "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+                    ),
+                    abi=usdc_abi,
+                )
+                cash = (
+                    usdc.functions.balanceOf(Web3.to_checksum_address(wallet)).call()
+                    / 1e6
+                )
+            except Exception:
+                pass
+
             try:
                 import httpx
 
@@ -828,7 +855,7 @@ def create_web_app() -> "FastAPI":
                 )
                 vals = resp.json()
                 if vals:
-                    cash = vals[0].get("value", 0)
+                    portfolio_value = vals[0].get("value", 0)
             except Exception:
                 pass
 
@@ -848,6 +875,7 @@ def create_web_app() -> "FastAPI":
             "next_scan_in": next_in,
             "avg_edge": avg_edge,
             "cash_balance": cash,
+            "portfolio_value": portfolio_value,
             "config": {
                 "trade_size_usd": _config.trade_size_usd,
                 "max_positions": _config.max_positions,
