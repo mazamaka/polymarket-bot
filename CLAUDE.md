@@ -102,7 +102,7 @@ subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeou
 SSEListener(on_breaking_match=callback, on_log=logger)
 ```
 
-- Подключается к News Intelligence SSE stream (`NEWS_SERVICE_URL/api/v1/stream?importance=high`)
+- Подключается к `news.maxbob.xyz/api/v1/stream?importance=high`
 - Auto-reconnect с exponential backoff (1s → 30s)
 - Article deduplication (1h TTL)
 - Market cooldown (5 min — не ре-анализировать тот же рынок)
@@ -137,7 +137,7 @@ SSEListener(on_breaking_match=callback, on_log=logger)
 
 ## Web Dashboard
 
-- **URL**: configured via reverse proxy (default port 8899)
+- **URL**: https://poly.maxbob.xyz/ (production)
 - **Порт**: 8899
 - **Auth**: basic auth middleware
 - **WebSocket**: real-time обновления portfolio, logs
@@ -153,20 +153,64 @@ SSEListener(on_breaking_match=callback, on_log=logger)
   - `POST /api/cancel-order` — отмена ордера
   - `GET /api/settings` / `POST /api/settings` — настройки
 
+## ColdMath Weather Bot
+
+Отдельный сервис внутри этого репо — погодный арбитражный бот.
+
+- **URL**: https://coldmath.maxbob.xyz/
+- **Порт**: 8866
+- **Контейнер**: `coldmath-bot`
+- **Docker**: `docker-compose.coldmath.yml` + `Dockerfile.coldmath`
+- **Основной файл**: `coldmath_bot.py`
+- **Auth**: admin / coldmath (HTTP Basic)
+- **Mode**: `BOT_MODE=live` (автостарт при запуске контейнера)
+
+### Auto-Redeem (poly-web3)
+
+Автоматическое получение выигрышей через Polymarket Builder API:
+- Библиотека: `poly-web3` (`PolyWeb3Service.redeem_all()`)
+- Builder profile: `MaxBobWeatherBot`
+- Credentials: `BUILDER_KEY`, `BUILDER_SECRET`, `BUILDER_PASSPHRASE` в `.env`
+- Вызывается после каждого скана в live режиме + кнопка "Redeem All" в дашборде
+
+### Dashboard
+
+Polymarket-style dark theme:
+- Portfolio/Cash (on-chain USDC) / P&L / Win Rate / Signals / Edge
+- Позиции с live ценами, P&L, Today/Tomorrow
+- API: `/api/status`, `/api/scan`, `/api/redeem`, `/api/start`, `/api/stop`, `/api/settings`
+
+### Архитектура coldmath_bot.py
+
+- `_get_w3()` — cached Web3 singleton
+- `_get_usdc_balance()` — on-chain USDC баланс
+- `_start_bot_loop()` — единая функция для autostart/manual start
+- `_create_redeem_service()` — lazy init PolyWeb3Service
+- Data API `/positions` — live цены, P&L, portfolio value (один запрос)
+- Balance check перед торговлей использует on-chain USDC, не Data API
+
 ## Деплой
 
-- **Контейнер**: `polymarket-bot` (docker compose)
-- **Обновление**: `git pull && docker compose up -d --build`
-- **Claude credentials**: `~/.claude/.credentials.json` монтируется в контейнер
+- **Polymarket Bot**: https://poly.maxbob.xyz/ (контейнер `polymarket-bot`)
+- **ColdMath Bot**: https://coldmath.maxbob.xyz/ (контейнер `coldmath-bot`)
+- **Сервер**: 94.156.232.242 (admin)
+- **Путь**: `/opt/polymarket-bot/`
+- **Обновление polymarket-bot**: `git pull && docker compose up -d --build`
+- **Обновление coldmath**: `git pull && docker compose -f docker-compose.coldmath.yml up -d --build`
+- **Claude credentials**: `~/.claude/.credentials.json` монтируется в polymarket-bot
 
 ## Git
 
+- GitHub: `github.com/mazamaka321-rgb/polymarket-bot` (origin)
 - Ветка: `main`
 
 ## Зависимости от других сервисов
 
-- **News Intelligence** (configured via `NEWS_SERVICE_URL` env var) — SSE stream для breaking news, market context, economic calendar
-- **Open-Meteo API** — погодные прогнозы для weather trading
+- **News Intelligence** (`news.maxbob.xyz`) — SSE stream для breaking news, market context, economic calendar
+- **Open-Meteo API** — погодные прогнозы для weather trading (ensemble: GFS, ECMWF, ICON, GEM)
+- **NWS API** (`api.weather.gov`) — cross-reference для US городов
 - **Polymarket Gamma API** — список рынков, цены
 - **Polymarket CLOB API** — исполнение ордеров (live mode)
-- **Polymarket Data API** — реальные позиции кошелька
+- **Polymarket Data API** — реальные позиции кошелька, live цены
+- **Polymarket Builder Relayer** — auto-redeem выигрышей (gasless)
+- **Polygon RPC** (`polygon-bor.publicnode.com`) — on-chain USDC баланс
