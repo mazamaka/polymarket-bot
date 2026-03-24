@@ -476,14 +476,26 @@ async function checkProxy() {
     btn.textContent = 'Checking...';
     btn.className = 'btn btn-proxy-checking';
     btn.disabled = true;
-    addLog('Checking proxy...', 'info');
+    addLog('Checking proxy & direct...', 'info');
     var r = await fetchJSON('/api/proxy-check', {method:'POST'});
     btn.disabled = false;
     if (r) {
-        updateProxyBtn(r);
-        if (r.ok && r.can_trade) addLog('Proxy OK: ' + r.ip + ' (' + r.country + ', ' + r.city + ') ' + r.latency_ms + 'ms | CLOB: reachable', 'trade');
-        else if (r.ok) addLog('Proxy UP but CANNOT trade: ' + r.ip + ' (' + r.country + ') | ' + r.error, 'error');
-        else addLog('Proxy FAILED: ' + r.error, 'error');
+        updateProxyBtn(r.proxy || r);
+        // Direct connection info
+        var d = r.direct;
+        if (d) {
+            var dMsg = 'Direct: ' + d.ip + ' (' + d.country + ') CLOB=' + (d.clob_reachable ? 'OK' : 'FAIL') + ' ' + d.latency_ms + 'ms';
+            addLog(dMsg, d.clob_reachable ? 'info' : 'error');
+        }
+        // Proxy info
+        var p = r.proxy;
+        if (p) {
+            if (p.ok && p.can_trade) addLog('Proxy: ' + p.ip + ' (' + p.country + ', ' + p.city + ') ' + p.latency_ms + 'ms | CLOB: OK', 'trade');
+            else if (p.ok) addLog('Proxy UP but CANNOT trade: ' + p.ip + ' (' + p.country + ') | ' + p.error, 'error');
+            else addLog('Proxy FAILED: ' + (p.error || 'unknown'), 'error');
+        } else {
+            addLog('No proxy configured', 'info');
+        }
     } else {
         btn.textContent = 'Proxy: error';
         btn.className = 'btn btn-proxy-fail';

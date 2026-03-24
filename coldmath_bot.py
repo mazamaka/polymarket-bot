@@ -108,20 +108,6 @@ def _get_usdc_balance(wallet: str) -> float:
 _BLOCKED_COUNTRIES = {"US"}
 
 
-def _proxy_status_dict(ps: "ProxyStatus") -> dict:
-    """Convert ProxyStatus to JSON-serializable dict."""
-    return {
-        "ok": ps.ok,
-        "ip": ps.ip,
-        "country": ps.country,
-        "city": ps.city,
-        "latency_ms": ps.latency_ms,
-        "can_trade": ps.can_trade,
-        "clob_reachable": ps.clob_reachable,
-        "error": ps.error,
-    }
-
-
 @dataclass
 class ProxyStatus:
     """Результат проверки прокси."""
@@ -136,19 +122,53 @@ class ProxyStatus:
     error: str = ""
 
 
-def check_proxy(proxy_url_template: str) -> ProxyStatus:
-    """Проверить валидность прокси: connectivity, гео, Polymarket CLOB доступность.
+def _proxy_status_dict(ps: ProxyStatus) -> dict:
+    """Convert ProxyStatus to JSON-serializable dict."""
+    return {
+        "ok": ps.ok,
+        "ip": ps.ip,
+        "country": ps.country,
+        "city": ps.city,
+        "latency_ms": ps.latency_ms,
+        "can_trade": ps.can_trade,
+        "clob_reachable": ps.clob_reachable,
+        "error": ps.error,
+    }
 
-    Проверяет:
-    1. Прокси работает (ipinfo.io)
-    2. IP не из US (Polymarket запрещён)
-    3. CLOB API доступен через прокси (clob.polymarket.com)
+
+# Cached proxy client — reuses TCP/TLS connections across checks
+_proxy_check_client: tuple[str, "httpx.Client"] | None = None
+
+
+def _get_proxy_check_client(proxy_url: str) -> "httpx.Client":
+    """Get or create cached httpx.Client for proxy checks."""
+    global _proxy_check_client
+    import httpx
+
+    if _proxy_check_client is not None:
+        cached_url, client = _proxy_check_client
+        if cached_url == proxy_url:
+            return client
+        try:
+            client.close()
+        except Exception:
+            pass
+
+    client = httpx.Client(proxy=proxy_url, timeout=15)
+    _proxy_check_client = (proxy_url, client)
+    return client
+
+
+def check_proxy(proxy_url_template: str, full: bool = True) -> ProxyStatus:
+    """Проверить валидность прокси.
 
     Args:
         proxy_url_template: URL прокси с возможным {session} placeholder.
+        full: True = полная проверка (ipinfo + CLOB).
+              False = только CLOB ping (быстрая pre-trade проверка).
 
     Returns:
-        ProxyStatus с полной диагностикой.
+        ProxyStatus с диагностикой.
     """
     if not proxy_url_template:
         return ProxyStatus(ok=False, error="No proxy configured")
@@ -158,47 +178,50 @@ def check_proxy(proxy_url_template: str) -> ProxyStatus:
     proxy_url = proxy_url_template.replace("{session}", "proxycheck")
 
     try:
-        start = time.monotonic()
-        client = httpx.Client(proxy=proxy_url, timeout=15)
+        client = _get_proxy_check_client(proxy_url)
+        ip = ""
+        country = ""
+        city = ""
+        latency = 0
 
-        # Step 1: Check IP and geo
-        resp = client.get("https://ipinfo.io/json")
-        latency = int((time.monotonic() - start) * 1000)
+        if full:
+            # Full: IP/geo via ipinfo + CLOB
+            start = time.monotonic()
+            resp = client.get("https://ipinfo.io/json")
+            latency = int((time.monotonic() - start) * 1000)
 
-        if resp.status_code != 200:
-            client.close()
-            return ProxyStatus(ok=False, error=f"ipinfo HTTP {resp.status_code}")
+            if resp.status_code != 200:
+                return ProxyStatus(ok=False, error=f"ipinfo HTTP {resp.status_code}")
 
-        data = resp.json()
-        ip = data.get("ip", "")
-        country = data.get("country", "")
-        city = data.get("city", "")
+            data = resp.json()
+            ip = data.get("ip", "")
+            country = data.get("country", "")
+            city = data.get("city", "")
 
-        # Step 2: Check if country is blocked
-        if country in _BLOCKED_COUNTRIES:
-            client.close()
-            return ProxyStatus(
-                ok=True,
-                ip=ip,
-                country=country,
-                city=city,
-                latency_ms=latency,
-                can_trade=False,
-                clob_reachable=False,
-                error=f"Blocked country: {country} (Polymarket unavailable)",
-            )
+            if country in _BLOCKED_COUNTRIES:
+                return ProxyStatus(
+                    ok=True,
+                    ip=ip,
+                    country=country,
+                    city=city,
+                    latency_ms=latency,
+                    can_trade=False,
+                    clob_reachable=False,
+                    error=f"Blocked country: {country} (Polymarket unavailable)",
+                )
 
-        # Step 3: Check Polymarket CLOB API reachability
+        # Check CLOB API reachability
         clob_reachable = False
         try:
+            clob_start = time.monotonic()
             clob_resp = client.get("https://clob.polymarket.com/time", timeout=10)
             clob_reachable = clob_resp.status_code == 200
+            if not full:
+                latency = int((time.monotonic() - clob_start) * 1000)
         except Exception:
             pass
 
-        client.close()
-
-        can_trade = clob_reachable and country not in _BLOCKED_COUNTRIES
+        can_trade = clob_reachable and (not full or country not in _BLOCKED_COUNTRIES)
         error = ""
         if not clob_reachable:
             error = "CLOB API unreachable through proxy"
@@ -1214,14 +1237,12 @@ def create_web_app() -> "FastAPI":
 
     def _run_scan_and_trade() -> int:
         """Shared scan+trade logic. Returns trades_made."""
-        # Check proxy before live trading
+        # Quick proxy check before live trading (CLOB ping only, no ipinfo)
         if _state["mode"] == "live" and _config.proxy_url:
-            ps = check_proxy(_config.proxy_url)
-            with _state_lock:
-                _state["proxy_status"] = _proxy_status_dict(ps)
+            ps = check_proxy(_config.proxy_url, full=False)
             if not ps.ok or not ps.can_trade:
-                reason = ps.error or f"Cannot trade ({ps.country})"
-                logger.warning("SKIP scan cycle: %s", reason)
+                reason = ps.error or "CLOB unreachable"
+                logger.warning("SKIP scan cycle: proxy %s", reason)
                 return 0
             logger.info("Proxy OK: %s (%s) %dms", ps.ip, ps.country, ps.latency_ms)
 
@@ -1461,28 +1482,73 @@ def create_web_app() -> "FastAPI":
     @app.post("/api/proxy-check")
     async def api_proxy_check(_user: str = Depends(verify_auth)):
         def _do_check() -> dict:
-            ps = check_proxy(_config.proxy_url)
-            result = _proxy_status_dict(ps)
-            with _state_lock:
-                _state["proxy_status"] = result
-            if ps.ok and ps.can_trade:
-                logger.info(
-                    "Proxy OK: %s (%s, %s) %dms | CLOB: OK",
-                    ps.ip,
-                    ps.country,
-                    ps.city,
-                    ps.latency_ms,
-                )
-            elif ps.ok:
-                logger.warning(
-                    "Proxy UP but CANNOT trade: %s (%s) | %s",
-                    ps.ip,
-                    ps.country,
-                    ps.error,
-                )
-            else:
-                logger.warning("Proxy FAILED: %s", ps.error)
-            return result
+            import httpx
+
+            # 1. Check direct connection (no proxy) — server's own IP
+            direct: dict = {
+                "ok": False,
+                "ip": "",
+                "country": "",
+                "clob_reachable": False,
+                "latency_ms": 0,
+                "error": "",
+            }
+            try:
+                start = time.monotonic()
+                dr = httpx.get("https://ipinfo.io/json", timeout=10)
+                direct["latency_ms"] = int((time.monotonic() - start) * 1000)
+                if dr.status_code == 200:
+                    dd = dr.json()
+                    direct["ok"] = True
+                    direct["ip"] = dd.get("ip", "")
+                    direct["country"] = dd.get("country", "")
+                    # Check CLOB direct
+                    try:
+                        cr = httpx.get("https://clob.polymarket.com/time", timeout=10)
+                        direct["clob_reachable"] = cr.status_code == 200
+                    except Exception:
+                        pass
+            except Exception as e:
+                direct["error"] = str(e)
+
+            # 2. Check proxy (full)
+            proxy_result = None
+            if _config.proxy_url:
+                ps = check_proxy(_config.proxy_url, full=True)
+                proxy_result = _proxy_status_dict(ps)
+                with _state_lock:
+                    _state["proxy_status"] = proxy_result
+                if ps.ok and ps.can_trade:
+                    logger.info(
+                        "Proxy OK: %s (%s, %s) %dms | CLOB: OK",
+                        ps.ip,
+                        ps.country,
+                        ps.city,
+                        ps.latency_ms,
+                    )
+                elif ps.ok:
+                    logger.warning(
+                        "Proxy UP but CANNOT trade: %s (%s) | %s",
+                        ps.ip,
+                        ps.country,
+                        ps.error,
+                    )
+                else:
+                    logger.warning("Proxy FAILED: %s", ps.error)
+
+            logger.info(
+                "Direct: %s (%s) CLOB=%s %dms",
+                direct["ip"],
+                direct["country"],
+                "OK" if direct["clob_reachable"] else "FAIL",
+                direct["latency_ms"],
+            )
+
+            return {
+                "direct": direct,
+                "proxy": proxy_result,
+                **(proxy_result or {}),
+            }
 
         return await asyncio.to_thread(_do_check)
 
