@@ -105,6 +105,23 @@ def _get_usdc_balance(wallet: str) -> float:
 # ── Proxy Check ────────────────────────────────────────────────────────────
 
 
+_BLOCKED_COUNTRIES = {"US"}
+
+
+def _proxy_status_dict(ps: "ProxyStatus") -> dict:
+    """Convert ProxyStatus to JSON-serializable dict."""
+    return {
+        "ok": ps.ok,
+        "ip": ps.ip,
+        "country": ps.country,
+        "city": ps.city,
+        "latency_ms": ps.latency_ms,
+        "can_trade": ps.can_trade,
+        "clob_reachable": ps.clob_reachable,
+        "error": ps.error,
+    }
+
+
 @dataclass
 class ProxyStatus:
     """Результат проверки прокси."""
@@ -114,17 +131,24 @@ class ProxyStatus:
     country: str = ""
     city: str = ""
     latency_ms: int = 0
+    can_trade: bool = False
+    clob_reachable: bool = False
     error: str = ""
 
 
 def check_proxy(proxy_url_template: str) -> ProxyStatus:
-    """Проверить валидность прокси.
+    """Проверить валидность прокси: connectivity, гео, Polymarket CLOB доступность.
+
+    Проверяет:
+    1. Прокси работает (ipinfo.io)
+    2. IP не из US (Polymarket запрещён)
+    3. CLOB API доступен через прокси (clob.polymarket.com)
 
     Args:
         proxy_url_template: URL прокси с возможным {session} placeholder.
 
     Returns:
-        ProxyStatus с IP, гео и latency.
+        ProxyStatus с полной диагностикой.
     """
     if not proxy_url_template:
         return ProxyStatus(ok=False, error="No proxy configured")
@@ -136,20 +160,58 @@ def check_proxy(proxy_url_template: str) -> ProxyStatus:
     try:
         start = time.monotonic()
         client = httpx.Client(proxy=proxy_url, timeout=15)
+
+        # Step 1: Check IP and geo
         resp = client.get("https://ipinfo.io/json")
         latency = int((time.monotonic() - start) * 1000)
-        client.close()
 
         if resp.status_code != 200:
-            return ProxyStatus(ok=False, error=f"HTTP {resp.status_code}")
+            client.close()
+            return ProxyStatus(ok=False, error=f"ipinfo HTTP {resp.status_code}")
 
         data = resp.json()
+        ip = data.get("ip", "")
+        country = data.get("country", "")
+        city = data.get("city", "")
+
+        # Step 2: Check if country is blocked
+        if country in _BLOCKED_COUNTRIES:
+            client.close()
+            return ProxyStatus(
+                ok=True,
+                ip=ip,
+                country=country,
+                city=city,
+                latency_ms=latency,
+                can_trade=False,
+                clob_reachable=False,
+                error=f"Blocked country: {country} (Polymarket unavailable)",
+            )
+
+        # Step 3: Check Polymarket CLOB API reachability
+        clob_reachable = False
+        try:
+            clob_resp = client.get("https://clob.polymarket.com/time", timeout=10)
+            clob_reachable = clob_resp.status_code == 200
+        except Exception:
+            pass
+
+        client.close()
+
+        can_trade = clob_reachable and country not in _BLOCKED_COUNTRIES
+        error = ""
+        if not clob_reachable:
+            error = "CLOB API unreachable through proxy"
+
         return ProxyStatus(
             ok=True,
-            ip=data.get("ip", ""),
-            country=data.get("country", ""),
-            city=data.get("city", ""),
+            ip=ip,
+            country=country,
+            city=city,
             latency_ms=latency,
+            can_trade=can_trade,
+            clob_reachable=clob_reachable,
+            error=error,
         )
     except httpx.ProxyError as e:
         return ProxyStatus(ok=False, error=f"Proxy error: {e}")
@@ -1146,6 +1208,7 @@ def create_web_app() -> "FastAPI":
                 "min_ensemble_members": _config.min_ensemble_members,
                 "scan_interval_min": _state["scan_interval_min"],
                 "mode": _state["mode"],
+                "proxy_url": _config.proxy_url,
             },
         }
 
@@ -1155,16 +1218,10 @@ def create_web_app() -> "FastAPI":
         if _state["mode"] == "live" and _config.proxy_url:
             ps = check_proxy(_config.proxy_url)
             with _state_lock:
-                _state["proxy_status"] = {
-                    "ok": ps.ok,
-                    "ip": ps.ip,
-                    "country": ps.country,
-                    "city": ps.city,
-                    "latency_ms": ps.latency_ms,
-                    "error": ps.error,
-                }
-            if not ps.ok:
-                logger.warning("SKIP scan cycle: proxy is down (%s)", ps.error)
+                _state["proxy_status"] = _proxy_status_dict(ps)
+            if not ps.ok or not ps.can_trade:
+                reason = ps.error or f"Cannot trade ({ps.country})"
+                logger.warning("SKIP scan cycle: %s", reason)
                 return 0
             logger.info("Proxy OK: %s (%s) %dms", ps.ip, ps.country, ps.latency_ms)
 
@@ -1341,30 +1398,90 @@ def create_web_app() -> "FastAPI":
                 _state["mode"] = body.mode
         return {"status": "ok"}
 
+    class ProxySetBody(PydanticBaseModel):
+        proxy_url: str = Field(..., max_length=500)
+
+    @app.post("/api/proxy-set")
+    async def api_proxy_set(body: ProxySetBody, _user: str = Depends(verify_auth)):
+        new_url = body.proxy_url.strip()
+
+        def _do_set() -> dict:
+            # Step 1: Validate new proxy
+            ps = check_proxy(new_url) if new_url else None
+
+            if new_url and (not ps or not ps.ok):
+                error = ps.error if ps else "Empty URL"
+                logger.warning("Proxy set REJECTED: %s", error)
+                return {
+                    "status": "error",
+                    "error": error,
+                    "proxy_status": _proxy_status_dict(ps) if ps else None,
+                }
+
+            if new_url and not ps.can_trade:
+                logger.warning(
+                    "Proxy set WARNING: %s — cannot trade (%s)", ps.ip, ps.error
+                )
+
+            # Step 2: Update config
+            old_url = _config.proxy_url
+            _config.proxy_url = new_url
+
+            # Step 3: Re-apply proxy patch for CLOB client
+            if new_url:
+                from trader.proxy_patch import apply_proxy
+
+                apply_proxy(new_url)
+
+            # Step 4: Invalidate existing trader (will be re-created on next trade)
+            with _state_lock:
+                _state["trader"] = None
+                _state["proxy_status"] = _proxy_status_dict(ps) if ps else None
+
+            if new_url:
+                logger.info(
+                    "Proxy changed: %s (%s, %s) %dms | can_trade=%s",
+                    ps.ip,
+                    ps.country,
+                    ps.city,
+                    ps.latency_ms,
+                    ps.can_trade,
+                )
+            else:
+                logger.info("Proxy removed (direct connection)")
+
+            return {
+                "status": "ok",
+                "old_proxy": old_url.split("@")[-1] if old_url else "",
+                "proxy_status": _proxy_status_dict(ps) if ps else None,
+            }
+
+        return await asyncio.to_thread(_do_set)
+
     @app.post("/api/proxy-check")
     async def api_proxy_check(_user: str = Depends(verify_auth)):
         def _do_check() -> dict:
             ps = check_proxy(_config.proxy_url)
-            result = {
-                "ok": ps.ok,
-                "ip": ps.ip,
-                "country": ps.country,
-                "city": ps.city,
-                "latency_ms": ps.latency_ms,
-                "error": ps.error,
-            }
+            result = _proxy_status_dict(ps)
             with _state_lock:
                 _state["proxy_status"] = result
-            if ps.ok:
+            if ps.ok and ps.can_trade:
                 logger.info(
-                    "Proxy check OK: %s (%s, %s) %dms",
+                    "Proxy OK: %s (%s, %s) %dms | CLOB: OK",
                     ps.ip,
                     ps.country,
                     ps.city,
                     ps.latency_ms,
                 )
+            elif ps.ok:
+                logger.warning(
+                    "Proxy UP but CANNOT trade: %s (%s) | %s",
+                    ps.ip,
+                    ps.country,
+                    ps.error,
+                )
             else:
-                logger.warning("Proxy check FAILED: %s", ps.error)
+                logger.warning("Proxy FAILED: %s", ps.error)
             return result
 
         return await asyncio.to_thread(_do_check)
@@ -1379,21 +1496,21 @@ def create_web_app() -> "FastAPI":
             def _initial_proxy_check():
                 ps = check_proxy(_config.proxy_url)
                 with _state_lock:
-                    _state["proxy_status"] = {
-                        "ok": ps.ok,
-                        "ip": ps.ip,
-                        "country": ps.country,
-                        "city": ps.city,
-                        "latency_ms": ps.latency_ms,
-                        "error": ps.error,
-                    }
-                if ps.ok:
+                    _state["proxy_status"] = _proxy_status_dict(ps)
+                if ps.ok and ps.can_trade:
                     logger.info(
-                        "Startup proxy: %s (%s, %s) %dms",
+                        "Startup proxy: %s (%s, %s) %dms | CLOB: OK",
                         ps.ip,
                         ps.country,
                         ps.city,
                         ps.latency_ms,
+                    )
+                elif ps.ok:
+                    logger.warning(
+                        "Startup proxy UP but CANNOT trade: %s (%s) | %s",
+                        ps.ip,
+                        ps.country,
+                        ps.error,
                     )
                 else:
                     logger.warning("Startup proxy FAILED: %s", ps.error)

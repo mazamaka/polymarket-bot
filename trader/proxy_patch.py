@@ -2,6 +2,7 @@
 
 Must be called BEFORE any ClobClient usage.
 Patches both httpx (used by helpers.py) and requests.Session (used by auth).
+Supports hot-swapping proxy URL via re-calling apply_proxy().
 """
 
 import logging
@@ -16,25 +17,32 @@ from py_clob_client.exceptions import PolyApiException
 
 logger = logging.getLogger(__name__)
 
-_patched = False
+_current_client: httpx.Client | None = None
+_orig_session: type | None = None
 
 
 def apply_proxy(proxy_url_template: str) -> None:
-    """Apply proxy to py-clob-client internals.
+    """Apply or replace proxy for py-clob-client internals.
 
     Args:
         proxy_url_template: URL with {session} placeholder for sticky sessions.
             Example: http://user-zone-ca:pass@proxy:2333
     """
-    global _patched
-    if _patched:
-        return
+    global _current_client, _orig_session
+
+    # Close previous client if re-patching
+    if _current_client is not None:
+        try:
+            _current_client.close()
+        except Exception:
+            pass
 
     session_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
     proxy_url = proxy_url_template.replace("{session}", f"bot{session_id}")
     logger.info("CLOB proxy: %s", proxy_url.split("@")[-1])
 
-    px = httpx.Client(proxy=proxy_url, timeout=30)
+    _current_client = httpx.Client(proxy=proxy_url, timeout=30)
+    px = _current_client
 
     def _request(
         endpoint: str, method: str, headers: dict | None = None, data: object = None
@@ -77,9 +85,13 @@ def apply_proxy(proxy_url_template: str) -> None:
     _helpers.delete = lambda ep, h=None, d=None: _request(ep, "DELETE", h, d)
     _helpers.put = lambda ep, h=None, d=None: _request(ep, "PUT", h, d)
 
-    orig_session = _req.Session
+    # Save original Session class on first patch
+    if _orig_session is None:
+        _orig_session = _req.Session
 
-    class ProxiedSession(orig_session):
+    orig = _orig_session
+
+    class ProxiedSession(orig):
         def __init__(self, *a, **kw):
             super().__init__(*a, **kw)
             self.proxies = {"http": proxy_url, "https": proxy_url}
@@ -88,5 +100,4 @@ def apply_proxy(proxy_url_template: str) -> None:
             )
 
     _req.Session = ProxiedSession
-    _patched = True
     logger.info("CLOB proxy patch applied")

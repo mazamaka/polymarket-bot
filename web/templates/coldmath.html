@@ -123,6 +123,15 @@
             <div class="setting-item"><label>Scan Interval (min)</label><input type="number" id="cfgInterval" value="30" min="5" max="120"></div>
             <div class="setting-item"><label>Mode</label><select id="cfgMode"><option value="scan">Scan Only</option><option value="paper">Paper</option><option value="live">Live</option></select></div>
         </div>
+        <div style="padding:14px 18px;border-top:1px solid var(--border)">
+            <label style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.3px;font-weight:500;display:block;margin-bottom:6px">Proxy URL</label>
+            <div style="display:flex;gap:8px;align-items:center">
+                <input type="text" id="cfgProxy" placeholder="http://user:pass@host:port" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:13px;font-family:monospace">
+                <button class="btn btn-primary" onclick="setProxy()">Apply Proxy</button>
+                <button class="btn btn-stop" onclick="removeProxy()" style="font-size:12px">Remove</button>
+            </div>
+            <div id="proxySetResult" style="font-size:11px;margin-top:6px;color:var(--dim)"></div>
+        </div>
         <div style="padding:0 18px 18px;text-align:right"><button class="btn btn-primary" onclick="saveSettings()">Save Settings</button></div>
     </div>
 
@@ -281,6 +290,7 @@ async function refresh() {
         $('cfgMinEns').value = data.config.min_ensemble_members;
         $('cfgInterval').value = data.config.scan_interval_min || 30;
         $('cfgMode').value = data.config.mode || 'paper';
+        if (data.config.proxy_url && !$('cfgProxy').value) $('cfgProxy').value = data.config.proxy_url;
     }
 
     // Positions table
@@ -445,10 +455,15 @@ async function saveSettings() {
 function updateProxyBtn(ps) {
     var btn = $('btnProxy');
     if (!ps) { btn.textContent = 'Proxy: —'; btn.className = 'btn'; return; }
-    if (ps.ok) {
-        btn.textContent = 'Proxy: ' + ps.ip + ' (' + ps.country + ') ' + ps.latency_ms + 'ms';
+    if (ps.ok && ps.can_trade) {
+        btn.textContent = ps.ip + ' (' + ps.country + ') ' + ps.latency_ms + 'ms';
         btn.className = 'btn btn-proxy-ok';
-        btn.title = ps.city + ', ' + ps.country + ' | ' + ps.latency_ms + 'ms';
+        btn.title = ps.city + ', ' + ps.country + ' | CLOB: OK | ' + ps.latency_ms + 'ms';
+    } else if (ps.ok) {
+        var warn = ps.error || ('Blocked: ' + ps.country);
+        btn.textContent = ps.ip + ' (' + ps.country + ') NO TRADE';
+        btn.className = 'btn btn-proxy-fail';
+        btn.title = warn;
     } else {
         btn.textContent = 'Proxy: FAIL';
         btn.className = 'btn btn-proxy-fail';
@@ -466,11 +481,49 @@ async function checkProxy() {
     btn.disabled = false;
     if (r) {
         updateProxyBtn(r);
-        if (r.ok) addLog('Proxy OK: ' + r.ip + ' (' + r.country + ', ' + r.city + ') ' + r.latency_ms + 'ms', 'trade');
+        if (r.ok && r.can_trade) addLog('Proxy OK: ' + r.ip + ' (' + r.country + ', ' + r.city + ') ' + r.latency_ms + 'ms | CLOB: reachable', 'trade');
+        else if (r.ok) addLog('Proxy UP but CANNOT trade: ' + r.ip + ' (' + r.country + ') | ' + r.error, 'error');
         else addLog('Proxy FAILED: ' + r.error, 'error');
     } else {
         btn.textContent = 'Proxy: error';
         btn.className = 'btn btn-proxy-fail';
+    }
+}
+
+async function setProxy() {
+    var url = $('cfgProxy').value.trim();
+    if (!url) { $('proxySetResult').textContent = 'Enter a proxy URL'; $('proxySetResult').style.color = 'var(--red)'; return; }
+    $('proxySetResult').textContent = 'Validating & applying...';
+    $('proxySetResult').style.color = 'var(--yellow)';
+    var r = await fetchJSON('/api/proxy-set', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({proxy_url: url})});
+    if (!r) { $('proxySetResult').textContent = 'API error'; $('proxySetResult').style.color = 'var(--red)'; return; }
+    if (r.status === 'ok') {
+        $('proxySetResult').style.color = 'var(--green)';
+        var ps = r.proxy_status;
+        if (ps && ps.can_trade) {
+            $('proxySetResult').textContent = 'Applied: ' + ps.ip + ' (' + ps.country + ') | CLOB: OK | ' + ps.latency_ms + 'ms';
+        } else if (ps) {
+            $('proxySetResult').style.color = 'var(--yellow)';
+            $('proxySetResult').textContent = 'Applied but WARNING: ' + (ps.error || 'cannot trade');
+        }
+        updateProxyBtn(ps);
+        addLog('Proxy changed: ' + (ps ? ps.ip + ' (' + ps.country + ')' : url), 'trade');
+    } else {
+        $('proxySetResult').textContent = 'Failed: ' + (r.error || 'unknown');
+        $('proxySetResult').style.color = 'var(--red)';
+        addLog('Proxy set failed: ' + (r.error || 'unknown'), 'error');
+    }
+}
+
+async function removeProxy() {
+    $('proxySetResult').textContent = 'Removing...';
+    var r = await fetchJSON('/api/proxy-set', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({proxy_url: ''})});
+    if (r && r.status === 'ok') {
+        $('proxySetResult').textContent = 'Proxy removed (direct connection)';
+        $('proxySetResult').style.color = 'var(--dim)';
+        $('cfgProxy').value = '';
+        updateProxyBtn(null);
+        addLog('Proxy removed', 'info');
     }
 }
 
