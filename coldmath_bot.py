@@ -302,11 +302,15 @@ class ClobTrader:
         if not config.private_key:
             raise ValueError("Private key not set")
 
-        # Apply proxy if configured
+        # Apply direct+proxy fallback if proxy configured
         if config.proxy_url:
             from trader.proxy_patch import apply_proxy
 
             apply_proxy(config.proxy_url)
+        logger.info(
+            "CLOB mode: %s",
+            "direct + proxy fallback" if config.proxy_url else "direct only",
+        )
 
         funder = config.funder_address or None
 
@@ -1237,14 +1241,24 @@ def create_web_app() -> "FastAPI":
 
     def _run_scan_and_trade() -> int:
         """Shared scan+trade logic. Returns trades_made."""
-        # Quick proxy check before live trading (CLOB ping only, no ipinfo)
-        if _state["mode"] == "live" and _config.proxy_url:
-            ps = check_proxy(_config.proxy_url, full=False)
-            if not ps.ok or not ps.can_trade:
-                reason = ps.error or "CLOB unreachable"
-                logger.warning("SKIP scan cycle: proxy %s", reason)
-                return 0
-            logger.info("Proxy OK: %s (%s) %dms", ps.ip, ps.country, ps.latency_ms)
+        # Quick CLOB reachability check before live trading
+        if _state["mode"] == "live":
+            import httpx
+
+            try:
+                r = httpx.get("https://clob.polymarket.com/time", timeout=10)
+                if r.status_code != 200:
+                    logger.warning(
+                        "CLOB direct check: HTTP %d (will use proxy fallback)",
+                        r.status_code,
+                    )
+            except Exception:
+                if not _config.proxy_url:
+                    logger.warning(
+                        "SKIP scan cycle: CLOB unreachable and no proxy configured"
+                    )
+                    return 0
+                logger.info("CLOB direct unreachable, proxy fallback will be used")
 
         results, scan_stats = scan_weather_markets(_config)
         with _state_lock:
