@@ -31,6 +31,9 @@
         .btn-stop { background:var(--red-bg); border-color:rgba(248,81,73,.4); color:var(--red); }
         .btn-stop:hover { background:rgba(248,81,73,.2); }
         .btn-icon { padding:7px 10px; }
+        .btn-proxy-ok { border-color:rgba(46,160,67,.4); color:var(--green); }
+        .btn-proxy-fail { border-color:rgba(248,81,73,.4); color:var(--red); background:var(--red-bg); }
+        .btn-proxy-checking { border-color:var(--yellow); color:var(--yellow); opacity:.7; }
 
         .stats { display:grid; grid-template-columns:repeat(6,1fr); gap:12px; margin-bottom:20px; }
         .stat { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; }
@@ -86,6 +89,7 @@
             <div class="status-info" id="statusInfo"></div>
         </div>
         <div class="controls">
+            <button class="btn" onclick="checkProxy()" id="btnProxy" title="Check Proxy">Proxy: —</button>
             <button class="btn btn-primary" onclick="runScan()">Scan Now</button>
             <button class="btn btn-green" onclick="runRedeem()" id="btnRedeem">Redeem All</button>
             <button class="btn" onclick="toggleBot()" id="btnToggle">Start Bot</button>
@@ -378,6 +382,9 @@ async function refresh() {
         ));
     }
 
+    // Proxy status
+    updateProxyBtn(data.proxy_status);
+
     // Logs rendered by refreshLogs() separately
 }
 
@@ -432,6 +439,39 @@ async function saveSettings() {
     var r = await fetchJSON('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg)});
     if (r) addLog('Settings saved', 'info');
     toggleSettings();
+}
+
+/* --- Proxy check --- */
+function updateProxyBtn(ps) {
+    var btn = $('btnProxy');
+    if (!ps) { btn.textContent = 'Proxy: —'; btn.className = 'btn'; return; }
+    if (ps.ok) {
+        btn.textContent = 'Proxy: ' + ps.ip + ' (' + ps.country + ') ' + ps.latency_ms + 'ms';
+        btn.className = 'btn btn-proxy-ok';
+        btn.title = ps.city + ', ' + ps.country + ' | ' + ps.latency_ms + 'ms';
+    } else {
+        btn.textContent = 'Proxy: FAIL';
+        btn.className = 'btn btn-proxy-fail';
+        btn.title = ps.error || 'Proxy check failed';
+    }
+}
+
+async function checkProxy() {
+    var btn = $('btnProxy');
+    btn.textContent = 'Checking...';
+    btn.className = 'btn btn-proxy-checking';
+    btn.disabled = true;
+    addLog('Checking proxy...', 'info');
+    var r = await fetchJSON('/api/proxy-check', {method:'POST'});
+    btn.disabled = false;
+    if (r) {
+        updateProxyBtn(r);
+        if (r.ok) addLog('Proxy OK: ' + r.ip + ' (' + r.country + ', ' + r.city + ') ' + r.latency_ms + 'ms', 'trade');
+        else addLog('Proxy FAILED: ' + r.error, 'error');
+    } else {
+        btn.textContent = 'Proxy: error';
+        btn.className = 'btn btn-proxy-fail';
+    }
 }
 
 /* --- Log rendering helpers --- */

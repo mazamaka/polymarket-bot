@@ -102,6 +102,65 @@ def _get_usdc_balance(wallet: str) -> float:
     return usdc.functions.balanceOf(Web3.to_checksum_address(wallet)).call() / 1e6
 
 
+# ── Proxy Check ────────────────────────────────────────────────────────────
+
+
+@dataclass
+class ProxyStatus:
+    """Результат проверки прокси."""
+
+    ok: bool
+    ip: str = ""
+    country: str = ""
+    city: str = ""
+    latency_ms: int = 0
+    error: str = ""
+
+
+def check_proxy(proxy_url_template: str) -> ProxyStatus:
+    """Проверить валидность прокси.
+
+    Args:
+        proxy_url_template: URL прокси с возможным {session} placeholder.
+
+    Returns:
+        ProxyStatus с IP, гео и latency.
+    """
+    if not proxy_url_template:
+        return ProxyStatus(ok=False, error="No proxy configured")
+
+    import httpx
+
+    proxy_url = proxy_url_template.replace("{session}", "proxycheck")
+
+    try:
+        start = time.monotonic()
+        client = httpx.Client(proxy=proxy_url, timeout=15)
+        resp = client.get("https://ipinfo.io/json")
+        latency = int((time.monotonic() - start) * 1000)
+        client.close()
+
+        if resp.status_code != 200:
+            return ProxyStatus(ok=False, error=f"HTTP {resp.status_code}")
+
+        data = resp.json()
+        return ProxyStatus(
+            ok=True,
+            ip=data.get("ip", ""),
+            country=data.get("country", ""),
+            city=data.get("city", ""),
+            latency_ms=latency,
+        )
+    except httpx.ProxyError as e:
+        return ProxyStatus(ok=False, error=f"Proxy error: {e}")
+    except httpx.ConnectError as e:
+        return ProxyStatus(ok=False, error=f"Connect error: {e}")
+    except httpx.TimeoutException:
+        return ProxyStatus(ok=False, error="Timeout (15s)")
+    except Exception as e:
+        return ProxyStatus(ok=False, error=str(e))
+
+
 # ── Config ──────────────────────────────────────────────────────────────────
 
 
@@ -901,6 +960,7 @@ def create_web_app() -> "FastAPI":
         "stop_event": None,
         "redeem_service": None,
         "scan_stats": None,
+        "proxy_status": None,
     }
 
     _config = BotConfig(
@@ -1075,6 +1135,7 @@ def create_web_app() -> "FastAPI":
             "cash_balance": cash,
             "portfolio_value": portfolio_value,
             "scan_stats": _state.get("scan_stats"),
+            "proxy_status": _state.get("proxy_status"),
             "logs": _log_buffer[-50:],
             "config": {
                 "trade_size_usd": _config.trade_size_usd,
@@ -1090,6 +1151,23 @@ def create_web_app() -> "FastAPI":
 
     def _run_scan_and_trade() -> int:
         """Shared scan+trade logic. Returns trades_made."""
+        # Check proxy before live trading
+        if _state["mode"] == "live" and _config.proxy_url:
+            ps = check_proxy(_config.proxy_url)
+            with _state_lock:
+                _state["proxy_status"] = {
+                    "ok": ps.ok,
+                    "ip": ps.ip,
+                    "country": ps.country,
+                    "city": ps.city,
+                    "latency_ms": ps.latency_ms,
+                    "error": ps.error,
+                }
+            if not ps.ok:
+                logger.warning("SKIP scan cycle: proxy is down (%s)", ps.error)
+                return 0
+            logger.info("Proxy OK: %s (%s) %dms", ps.ip, ps.country, ps.latency_ms)
+
         results, scan_stats = scan_weather_markets(_config)
         with _state_lock:
             _state["signals"] = _signals_to_dicts(results)
@@ -1263,10 +1341,65 @@ def create_web_app() -> "FastAPI":
                 _state["mode"] = body.mode
         return {"status": "ok"}
 
+    @app.post("/api/proxy-check")
+    async def api_proxy_check(_user: str = Depends(verify_auth)):
+        def _do_check() -> dict:
+            ps = check_proxy(_config.proxy_url)
+            result = {
+                "ok": ps.ok,
+                "ip": ps.ip,
+                "country": ps.country,
+                "city": ps.city,
+                "latency_ms": ps.latency_ms,
+                "error": ps.error,
+            }
+            with _state_lock:
+                _state["proxy_status"] = result
+            if ps.ok:
+                logger.info(
+                    "Proxy check OK: %s (%s, %s) %dms",
+                    ps.ip,
+                    ps.country,
+                    ps.city,
+                    ps.latency_ms,
+                )
+            else:
+                logger.warning("Proxy check FAILED: %s", ps.error)
+            return result
+
+        return await asyncio.to_thread(_do_check)
+
     @app.on_event("startup")
     async def _autostart_bot():
         nonlocal _ws_loop
         _ws_loop = asyncio.get_running_loop()
+        # Check proxy on startup
+        if _config.proxy_url:
+
+            def _initial_proxy_check():
+                ps = check_proxy(_config.proxy_url)
+                with _state_lock:
+                    _state["proxy_status"] = {
+                        "ok": ps.ok,
+                        "ip": ps.ip,
+                        "country": ps.country,
+                        "city": ps.city,
+                        "latency_ms": ps.latency_ms,
+                        "error": ps.error,
+                    }
+                if ps.ok:
+                    logger.info(
+                        "Startup proxy: %s (%s, %s) %dms",
+                        ps.ip,
+                        ps.country,
+                        ps.city,
+                        ps.latency_ms,
+                    )
+                else:
+                    logger.warning("Startup proxy FAILED: %s", ps.error)
+
+            await asyncio.to_thread(_initial_proxy_check)
+
         if _state["mode"] in ("paper", "live"):
             await asyncio.sleep(2)
             _start_bot_loop("autostart")
