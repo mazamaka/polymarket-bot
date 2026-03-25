@@ -289,6 +289,10 @@ class BotConfig:
     max_days_ahead: int = 5  # макс. дней до резолюции (ColdMath: 1-3 дня)
     min_days_ahead: int = 0  # мин. дней до резолюции
 
+    # Stop-loss
+    stop_loss_pct: float = 0.50  # закрыть если NO упал на 50% от entry
+    stop_loss_slippage: float = 0.03  # 3% скидка от bid для гарантии исполнения
+
     # Edge thresholds — когда покупать NO
     # ColdMath в основном ставит NO на exactly (97%) и below/above (98%)
     min_no_price: float = 0.90  # мин. цена NO (не покупать дешевле)
@@ -425,6 +429,35 @@ class ClobTrader:
         if not ob or not ob["asks"]:
             return 0.0
         return min(a["price"] for a in ob["asks"] if a["price"] > 0)
+
+    def get_best_bid(self, token_id: str) -> float:
+        """Лучшая цена покупки (bid) — цена по которой можем продать."""
+        try:
+            ob = self.client.get_order_book(token_id)
+            bids = getattr(ob, "bids", []) or []
+            if not bids:
+                return 0.0
+            return max(float(getattr(b, "price", 0)) for b in bids)
+        except Exception as e:
+            logger.error("Bid error: %s", e)
+            return 0.0
+
+    def sell_no(self, token_id_no: str, price: float, shares: float) -> dict | None:
+        """Продать NO токен (stop-loss)."""
+        order_args = OrderArgs(
+            token_id=token_id_no,
+            price=round(price, 4),
+            size=round(shares, 2),
+            side="SELL",
+        )
+        try:
+            signed = self.client.create_order(order_args)
+            result = self.client.post_order(signed)
+            logger.info("SELL order posted: %s", result)
+            return result
+        except Exception as e:
+            logger.error("SELL order error: %s", e)
+            return None
 
 
 # ── Position Storage ────────────────────────────────────────────────────────
@@ -1443,6 +1476,112 @@ def create_web_app() -> "FastAPI":
                     logger.info("Price snapshots: %d positions tracked", len(snapshots))
             except Exception as e:
                 logger.warning("Price snapshot error: %s", e)
+
+        # Stop-loss: close positions with drawdown >= stop_loss_pct
+        if _state["mode"] == "live" and _config.stop_loss_pct > 0:
+            try:
+                bot_positions = load_positions()
+                if not bot_positions:
+                    bot_positions = []
+
+                # Get live prices from Data API
+                import httpx as _httpx2
+
+                live_resp = _httpx2.get(
+                    "https://data-api.polymarket.com/positions",
+                    params={
+                        "user": _config.funder_address.lower(),
+                        "sizeThreshold": "0",
+                        "limit": "200",
+                    },
+                    timeout=10,
+                )
+                live_by_cid = {}
+                for lp in live_resp.json():
+                    cid = lp.get("conditionId", "")
+                    if cid:
+                        live_by_cid[cid] = lp
+
+                # Initialize trader if needed
+                with _state_lock:
+                    if not _state["trader"] and _config.private_key:
+                        _state["trader"] = ClobTrader(_config)
+                    trader = _state["trader"]
+
+                stopped = 0
+                for pos in bot_positions:
+                    if pos.get("status") != "open":
+                        continue
+                    mid = pos.get("market_id", "")
+                    lp = live_by_cid.get(mid)
+                    if not lp or lp.get("redeemable"):
+                        continue
+
+                    cur_no = float(lp.get("curPrice", 0))
+                    entry_no = pos.get("entry_price", 0)
+                    if entry_no <= 0 or cur_no <= 0:
+                        continue
+
+                    drawdown = (entry_no - cur_no) / entry_no
+                    if drawdown < _config.stop_loss_pct:
+                        continue
+
+                    # Trigger stop-loss
+                    no_token_id = pos.get("no_token_id", "")
+                    shares = pos.get("shares", 0)
+                    if not no_token_id or shares <= 0 or not trader:
+                        logger.warning(
+                            "STOP-LOSS triggered but can't sell: %s (no token/shares/trader)",
+                            pos.get("question", "")[:40],
+                        )
+                        continue
+
+                    # Get best bid and sell with slippage
+                    best_bid = trader.get_best_bid(no_token_id)
+                    if best_bid <= 0:
+                        logger.warning(
+                            "STOP-LOSS: no bid for %s", pos.get("question", "")[:40]
+                        )
+                        continue
+
+                    sell_price = round(best_bid * (1 - _config.stop_loss_slippage), 4)
+                    if sell_price < 0.001:
+                        sell_price = 0.001
+
+                    logger.info(
+                        "STOP-LOSS SELL: %s | entry=%.3f cur=%.3f (-%d%%) | sell %.2f shares @ %.4f (bid=%.4f)",
+                        pos.get("question", "")[:40],
+                        entry_no,
+                        cur_no,
+                        int(drawdown * 100),
+                        shares,
+                        sell_price,
+                        best_bid,
+                    )
+
+                    result = trader.sell_no(no_token_id, sell_price, shares)
+                    if result and result.get("success", result.get("orderID")):
+                        pnl = (sell_price - entry_no) * shares
+                        pos["status"] = "stopped"
+                        pos["pnl"] = round(pnl, 2)
+                        append_history(pos)
+                        stopped += 1
+
+                        if _db_available:
+                            try:
+                                db.resolve_position(mid, "stopped", round(pnl, 2))
+                            except Exception:
+                                pass
+
+                if stopped > 0:
+                    open_positions = [
+                        p for p in bot_positions if p.get("status") == "open"
+                    ]
+                    save_positions(open_positions)
+                    logger.info("Stop-loss: %d positions closed", stopped)
+
+            except Exception as e:
+                logger.warning("Stop-loss check error: %s", e)
 
         # Finish scan in DB
         if _db_available and scan_id:
