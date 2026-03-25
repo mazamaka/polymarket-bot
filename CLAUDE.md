@@ -159,15 +159,57 @@ SSEListener(on_breaking_match=callback, on_log=logger)
 
 - **URL**: https://coldmath.maxbob.xyz/
 - **Порт**: 8866
-- **Контейнер**: `coldmath-bot`
+- **Контейнер**: `coldmath-bot` + `coldmath-db` (postgres:16-alpine)
 - **Docker**: `docker-compose.coldmath.yml` + `Dockerfile.coldmath`
 - **Основной файл**: `coldmath_bot.py`
+- **БД модуль**: `coldmath_db.py`
 - **Auth**: admin / coldmath (HTTP Basic)
 - **Mode**: `BOT_MODE=live` (автостарт при запуске контейнера)
 
+### Сервер ColdMath
+
+- **IP**: 150.241.81.67 (отдельный от admin)
+- **Path**: `/opt/coldmath`
+- **OS**: Ubuntu 24.04, 4 vCPU AMD Ryzen 9 5950X, 8GB RAM
+- **NPM**: Nginx Proxy Manager (coldmath.maxbob.xyz → :8866)
+- **Cloudflare**: proxied, SSL=flexible
+
+### PostgreSQL (coldmath-db)
+
+- DSN: `postgresql://coldmath:coldmath@coldmath-db:5432/coldmath`
+- Таблицы:
+  - `positions` — открытые + закрытые позиции (status: open/won/lost/stopped)
+  - `signals` — все сигналы каждого скана (ensemble_temps JSONB, model_prob, market_price, edge, days_ahead)
+  - `scans` — метаданные сканов (duration, balance before/after, signals_found, trades_made)
+  - `price_snapshots` — история цен открытых позиций (каждые 30 мин)
+- Auto-migration из JSON при старте
+- API: `/api/analytics`, `/api/db/migrate`
+
+### Risk Management (ColdMath)
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `trade_size_usd` | $2.00 | Размер одной ставки |
+| `min_no_price` | 0.90 | Мин. цена NO |
+| `max_no_price` | 0.995 | Макс. цена NO |
+| `stop_loss_pct` | 50% | Stop-loss при drawdown (sell NO через CLOB) |
+| `stop_loss_slippage` | 3% | Скидка от bid для гарантии исполнения |
+| `min_model_prob_no` | 85% | Мин. вероятность NO по ensemble |
+
+### Edge Scaling
+
+Мин. edge растёт с дистанцией до резолюции:
+
+| Days ahead | Min edge | Пример |
+|-----------|----------|--------|
+| 0-1 день | 3% | Прогноз точный, берём почти всё |
+| 2 дня | 5% | |
+| 3 дня | 8% | Chicago 68°F (1.5%) — отфильтрован |
+| 4 дня | 12% | Только жирные сигналы |
+| 5 дней | 15% | Почти ничего не пройдёт |
+
 ### Auto-Redeem (poly-web3)
 
-Автоматическое получение выигрышей через Polymarket Builder API:
 - Библиотека: `poly-web3` (`PolyWeb3Service.redeem_all()`)
 - Builder profile: `MaxBobWeatherBot`
 - Credentials: `BUILDER_KEY`, `BUILDER_SECRET`, `BUILDER_PASSPHRASE` в `.env`
@@ -175,28 +217,37 @@ SSEListener(on_breaking_match=callback, on_log=logger)
 
 ### Dashboard
 
-Polymarket-style dark theme:
+Modern dark/light theme с animated background:
 - Portfolio/Cash (on-chain USDC) / P&L / Win Rate / Signals / Edge
-- Позиции с live ценами, P&L, Today/Tomorrow
-- API: `/api/status`, `/api/scan`, `/api/redeem`, `/api/start`, `/api/stop`, `/api/settings`
+- Позиции с live ценами, P&L, Opened time, Resolves — сортируемые колонки
+- Trade History с ROI%
+- Dark/light theme toggle (localStorage)
+- WebSocket real-time logs
+- API: `/api/status`, `/api/scan`, `/api/redeem`, `/api/start`, `/api/stop`, `/api/settings`, `/api/analytics`, `/api/db/migrate`
 
 ### Архитектура coldmath_bot.py
 
-- `_get_w3()` — cached Web3 singleton
-- `_get_usdc_balance()` — on-chain USDC баланс
-- `_start_bot_loop()` — единая функция для autostart/manual start
-- `_create_redeem_service()` — lazy init PolyWeb3Service
-- Data API `/positions` — live цены, P&L, portfolio value (один запрос)
-- Balance check перед торговлей использует on-chain USDC, не Data API
+- `BotConfig` — все настройки (trade size, edge scaling, stop-loss, proxy)
+- `ClobTrader` — CLOB API wrapper (buy_no, sell_no, get_best_bid/ask)
+- `scan_weather_markets()` → `ScanResult` с ensemble_temps, days_ahead
+- `execute_trades()` — открытие позиций с dedup по conditionId
+- `check_positions()` — резолв через Data API (redeemable check)
+- `_run_scan_and_trade()` — единый цикл: scan → signals to DB → trade → check → snapshots → stop-loss → redeem
+- Stop-loss: sell NO при drawdown ≥50% (best_bid * 0.97)
+- Price snapshots: каждые 30 мин снимок цен всех открытых позиций для backtest
+
+### Wallet
+
+- Address: `0x842F71005C45Ca1Ea355512EA9F162a00051C363`
+- Proxy: MangoProxy CA (Vancouver/Beauceville)
+- Balance: ~$35 USDC (as of 2026-03-25)
 
 ## Деплой
 
-- **Polymarket Bot**: https://poly.maxbob.xyz/ (контейнер `polymarket-bot`)
-- **ColdMath Bot**: https://coldmath.maxbob.xyz/ (контейнер `coldmath-bot`)
-- **Сервер**: 94.156.232.242 (admin)
-- **Путь**: `/opt/polymarket-bot/`
-- **Обновление polymarket-bot**: `git pull && docker compose up -d --build`
-- **Обновление coldmath**: `git pull && docker compose -f docker-compose.coldmath.yml up -d --build`
+- **Polymarket Bot**: https://poly.maxbob.xyz/ (контейнер `polymarket-bot`, сервер 94.156.232.242)
+- **ColdMath Bot**: https://coldmath.maxbob.xyz/ (контейнер `coldmath-bot`, сервер 150.241.81.67)
+- **Обновление polymarket-bot**: `cd /opt/polymarket-bot && git pull && docker compose up -d --build`
+- **Обновление coldmath**: `cd /opt/coldmath && git pull && docker compose -f docker-compose.coldmath.yml up -d --build`
 - **Claude credentials**: `~/.claude/.credentials.json` монтируется в polymarket-bot
 
 ## Git
