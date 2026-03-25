@@ -57,10 +57,27 @@ try:
 except ImportError:
     db = None  # type: ignore[assignment]
 
+_log_dir = Path(__file__).parent / "data"
+_log_dir.mkdir(exist_ok=True)
+
+_handlers: list[logging.Handler] = [logging.StreamHandler()]
+try:
+    _handlers.append(
+        logging.handlers.RotatingFileHandler(
+            _log_dir / "coldmath_bot.log",
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+    )
+except PermissionError:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
+    handlers=_handlers,
 )
 logger = logging.getLogger("coldmath")
 
