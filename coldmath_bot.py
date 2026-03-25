@@ -487,6 +487,8 @@ class ScanResult:
     market_price_no: float
     no_token_id: str
     edge: float  # model_prob_no - market_price_no
+    ensemble_temps: list[float] = field(default_factory=list)
+    days_ahead: int = 0
 
 
 def scan_weather_markets(config: BotConfig) -> tuple[list[ScanResult], dict]:
@@ -589,6 +591,8 @@ def scan_weather_markets(config: BotConfig) -> tuple[list[ScanResult], dict]:
                     market_price_no=market_no,
                     no_token_id=no_token_id,
                     edge=edge,
+                    ensemble_temps=temps,
+                    days_ahead=days_ahead,
                 )
             )
 
@@ -1383,6 +1387,7 @@ def create_web_app() -> "FastAPI":
                         "market_price_no": r.market_price_no,
                         "edge": r.edge,
                         "ensemble_count": r.ensemble_count,
+                        "ensemble_temps": r.ensemble_temps,
                         "action": "signal",
                     }
                     for r in results

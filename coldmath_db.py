@@ -103,6 +103,8 @@ def init_db() -> None:
                     edge REAL DEFAULT 0,
                     ensemble_count INT DEFAULT 0,
                     ensemble_temps JSONB,
+                    days_ahead INT DEFAULT 0,
+                    threshold_high REAL,
                     action TEXT DEFAULT 'skip',
                     skip_reason TEXT DEFAULT '',
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -111,6 +113,10 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at);
                 CREATE INDEX IF NOT EXISTS idx_signals_city ON signals(city);
                 CREATE INDEX IF NOT EXISTS idx_signals_direction ON signals(direction);
+
+                -- Add columns if missing (for existing DBs)
+                ALTER TABLE signals ADD COLUMN IF NOT EXISTS days_ahead INT DEFAULT 0;
+                ALTER TABLE signals ADD COLUMN IF NOT EXISTS threshold_high REAL;
 
                 CREATE TABLE IF NOT EXISTS scans (
                     id SERIAL PRIMARY KEY,
