@@ -93,6 +93,8 @@
         .table-wrap { overflow-x:auto; }
         table { width:100%; border-collapse:collapse; }
         th { text-align:left; padding:10px 20px; font-size:11px; color:var(--dim2); text-transform:uppercase; letter-spacing:.5px; font-weight:600; border-bottom:1px solid var(--border); white-space:nowrap; background:var(--card); position:sticky; top:0; }
+        th[style*="cursor"] { transition:color var(--transition); }
+        th[style*="cursor"]:hover { color:var(--text); }
         td { padding:12px 20px; font-size:13px; border-bottom:1px solid var(--border); vertical-align:middle; }
         tr:last-child td { border-bottom:none; }
         tr:hover td { background:var(--card2); }
@@ -249,13 +251,29 @@ async function fetchJSON(url, opts) {
     catch(e) { addLog('API error: ' + e.message, 'error'); return null; }
 }
 
+var _posSortKey = 'target_date';
+var _posSortDir = 'asc';
+function sortPositions(key) {
+    if (_posSortKey === key) _posSortDir = _posSortDir === 'asc' ? 'desc' : 'asc';
+    else { _posSortKey = key; _posSortDir = 'asc'; }
+    refresh();
+}
+
 function makeTable(headers, rows) {
     const t = document.createElement('table');
     const thead = t.createTHead();
     const hr = thead.insertRow();
     headers.forEach(function(h) {
         const th = document.createElement('th');
-        th.textContent = h.label;
+        if (h.sort) {
+            th.style.cursor = 'pointer';
+            th.style.userSelect = 'none';
+            var arrow = _posSortKey === h.sort ? (_posSortDir === 'asc' ? ' \u25B2' : ' \u25BC') : '';
+            th.textContent = h.label + arrow;
+            th.onclick = function() { sortPositions(h.sort); };
+        } else {
+            th.textContent = h.label;
+        }
         if (h.right) th.className = 'col-r';
         hr.appendChild(th);
     });
@@ -354,9 +372,23 @@ async function refresh() {
     $('posCount').textContent = positions.length;
     if (!positions.length) { var d = document.createElement('div'); d.className='empty'; d.textContent='No open positions'; pb.appendChild(d); }
     else {
-        positions.sort(function(a, b) { return (a.target_date||'9999').localeCompare(b.target_date||'9999'); });
+        if (!_posSortKey) _posSortKey = 'target_date';
+        positions.sort(function(a, b) {
+            var va, vb;
+            switch(_posSortKey) {
+                case 'market': va = a.question||''; vb = b.question||''; break;
+                case 'type': va = a.direction||''; vb = b.direction||''; break;
+                case 'cost': va = a.initial_value||a.size_usd||0; vb = b.initial_value||b.size_usd||0; break;
+                case 'value': va = a.current_value||0; vb = b.current_value||0; break;
+                case 'pnl': va = a.cash_pnl||0; vb = b.cash_pnl||0; break;
+                case 'opened': va = a.opened_at||''; vb = b.opened_at||''; break;
+                default: va = a.target_date||'9999'; vb = b.target_date||'9999';
+            }
+            var cmp = typeof va === 'string' ? va.localeCompare(vb) : va - vb;
+            return _posSortDir === 'asc' ? cmp : -cmp;
+        });
         pb.appendChild(makeTable(
-            [{label:'Market'},{label:'Type'},{label:'Price',right:true,mono:true},{label:'Cost',right:true,mono:true},{label:'Value',right:true,mono:true},{label:'P&L',right:true,mono:true},{label:'Resolves',right:true}],
+            [{label:'Market',sort:'market'},{label:'Type',sort:'type'},{label:'Price',right:true,mono:true},{label:'Cost',right:true,mono:true,sort:'cost'},{label:'Value',right:true,mono:true,sort:'value'},{label:'P&L',right:true,mono:true,sort:'pnl'},{label:'Opened',right:true,sort:'opened'},{label:'Resolves',right:true,sort:'target_date'}],
             positions.map(function(p) {
                 var entry = (p.entry_price||0)*100;
                 var cur = (p.cur_price||p.entry_price||0)*100;
@@ -387,6 +419,13 @@ async function refresh() {
 
                 var realCost = p.initial_value || p.size_usd || 0;
 
+                // Opened time
+                var openedStr = '';
+                if (p.opened_at) {
+                    var d = new Date(p.opened_at);
+                    if (!isNaN(d)) openedStr = d.toLocaleDateString([], {month:'short',day:'numeric'}) + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+                }
+
                 return [
                     (p.question||'').substring(0,50),
                     p.direction ? makeBadge(p.direction, p.direction) : '-',
@@ -394,6 +433,7 @@ async function refresh() {
                     '$' + realCost.toFixed(2),
                     valCell,
                     pnlCell,
+                    openedStr,
                     resolveTag(p.target_date),
                 ];
             })

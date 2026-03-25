@@ -1275,6 +1275,9 @@ def create_web_app() -> "FastAPI":
                             "cash_pnl": lp.get("cashPnl", 0),
                             "percent_pnl": lp.get("percentPnl", 0),
                             "edge": bot_pos.get("edge", 0) if bot_pos else 0,
+                            "opened_at": bot_pos.get("opened_at", "")
+                            if bot_pos
+                            else "",
                             "source": "coldmath" if cid in bot_market_ids else "other",
                         }
                     )
