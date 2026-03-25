@@ -430,15 +430,27 @@ async function refresh() {
     if (!history.length) { var d3 = document.createElement('div'); d3.className='empty'; d3.textContent='No completed trades yet'; hb.appendChild(d3); }
     else {
         hb.appendChild(makeTable(
-            [{label:'Market'},{label:'City'},{label:'Type'},{label:'Result'},{label:'P&L',right:true,mono:true},{label:'Entry',right:true,mono:true},{label:'Date',right:true}],
+            [{label:'Market'},{label:'City'},{label:'Type'},{label:'Result'},{label:'P&L',right:true,mono:true},{label:'ROI',right:true,mono:true},{label:'Entry',right:true,mono:true},{label:'Date',right:true}],
             history.slice().reverse().slice(0,50).map(function(h) {
                 var won = h.status === 'won';
+                var pnl = h.pnl || 0;
+                var cost = h.size_usd || 0;
+                var roiPct = cost > 0 ? (pnl / cost * 100) : 0;
+                var pnlCell = document.createElement('div');
+                var pnlMain = document.createElement('div');
+                pnlMain.className = (pnl >= 0 ? 'green' : 'red') + ' mono';
+                pnlMain.textContent = pnlFmt(pnl);
+                pnlCell.appendChild(pnlMain);
+                var roiSpan = document.createElement('span');
+                roiSpan.className = (roiPct >= 0 ? 'green' : 'red') + ' mono';
+                roiSpan.textContent = (roiPct >= 0 ? '+' : '') + roiPct.toFixed(1) + '%';
                 return [
                     (h.question||'').substring(0,50),
                     h.city||'-',
                     makeBadge(h.direction||'?', h.direction||'exactly'),
                     makeBadge(won?'WON':'LOST', won?'won':'lost'),
-                    pnlFmt(h.pnl||0),
+                    pnlCell,
+                    roiSpan,
                     ((h.entry_price||0)*100).toFixed(1) + '\u00a2',
                     h.target_date||'-',
                 ];
