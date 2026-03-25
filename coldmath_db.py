@@ -276,7 +276,7 @@ def save_signals_batch(signals: list[dict], scan_id: int | None = None) -> int:
             for sig in signals:
                 values.append(
                     cur.mogrify(
-                        "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                         (
                             scan_id,
                             sig.get("market_id", ""),
@@ -293,6 +293,7 @@ def save_signals_batch(signals: list[dict], scan_id: int | None = None) -> int:
                             sig.get("edge", 0),
                             sig.get("ensemble_count", 0),
                             json.dumps(sig.get("ensemble_temps", [])),
+                            sig.get("days_ahead", 0),
                             sig.get("action", "skip"),
                             sig.get("skip_reason", ""),
                         ),
@@ -305,7 +306,7 @@ def save_signals_batch(signals: list[dict], scan_id: int | None = None) -> int:
                     model_prob_yes, model_prob_no,
                     market_price_yes, market_price_no,
                     edge, ensemble_count, ensemble_temps,
-                    action, skip_reason
+                    days_ahead, action, skip_reason
                 ) VALUES """ + b",".join(values)
             cur.execute(query)
             return len(signals)

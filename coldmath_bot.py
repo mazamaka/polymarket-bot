@@ -1388,6 +1388,7 @@ def create_web_app() -> "FastAPI":
                         "edge": r.edge,
                         "ensemble_count": r.ensemble_count,
                         "ensemble_temps": r.ensemble_temps,
+                        "days_ahead": r.days_ahead,
                         "action": "signal",
                     }
                     for r in results
