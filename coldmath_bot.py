@@ -1412,6 +1412,38 @@ def create_web_app() -> "FastAPI":
 
         check_positions(_config)
 
+        # Snapshot prices of all open positions for price history tracking
+        if _db_available and _config.funder_address:
+            try:
+                import httpx as _httpx
+
+                resp = _httpx.get(
+                    "https://data-api.polymarket.com/positions",
+                    params={
+                        "user": _config.funder_address.lower(),
+                        "sizeThreshold": "0",
+                        "limit": "200",
+                    },
+                    timeout=10,
+                )
+                snapshots = []
+                for lp in resp.json():
+                    cid = lp.get("conditionId", "")
+                    cur_price = float(lp.get("curPrice", 0))
+                    if cid and cur_price > 0 and not lp.get("redeemable"):
+                        snapshots.append(
+                            {
+                                "market_id": cid,
+                                "no_price": cur_price,
+                                "yes_price": round(1.0 - cur_price, 4),
+                            }
+                        )
+                if snapshots:
+                    db.save_price_snapshots(snapshots, scan_id=scan_id)
+                    logger.info("Price snapshots: %d positions tracked", len(snapshots))
+            except Exception as e:
+                logger.warning("Price snapshot error: %s", e)
+
         # Finish scan in DB
         if _db_available and scan_id:
             try:

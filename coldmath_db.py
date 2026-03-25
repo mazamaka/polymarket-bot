@@ -118,6 +118,18 @@ def init_db() -> None:
                 ALTER TABLE signals ADD COLUMN IF NOT EXISTS days_ahead INT DEFAULT 0;
                 ALTER TABLE signals ADD COLUMN IF NOT EXISTS threshold_high REAL;
 
+                CREATE TABLE IF NOT EXISTS price_snapshots (
+                    id SERIAL PRIMARY KEY,
+                    market_id TEXT NOT NULL,
+                    no_price REAL NOT NULL,
+                    yes_price REAL NOT NULL,
+                    scan_id INT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_snapshots_market ON price_snapshots(market_id);
+                CREATE INDEX IF NOT EXISTS idx_snapshots_created ON price_snapshots(created_at);
+
                 CREATE TABLE IF NOT EXISTS scans (
                     id SERIAL PRIMARY KEY,
                     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -200,6 +212,49 @@ def resolve_position(market_id: str, status: str, pnl: float) -> None:
                 """,
                 (status, pnl, market_id),
             )
+
+
+def save_price_snapshots(snapshots: list[dict], scan_id: int | None = None) -> int:
+    """Bulk insert price snapshots for open positions."""
+    if not snapshots:
+        return 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            values = []
+            for s in snapshots:
+                values.append(
+                    cur.mogrify(
+                        "(%s,%s,%s,%s)",
+                        (
+                            s["market_id"],
+                            s["no_price"],
+                            s["yes_price"],
+                            scan_id,
+                        ),
+                    )
+                )
+            query = (
+                b"INSERT INTO price_snapshots (market_id, no_price, yes_price, scan_id) VALUES "
+                + b",".join(values)
+            )
+            cur.execute(query)
+            return len(snapshots)
+
+
+def get_price_history(market_id: str) -> list[dict]:
+    """Get price history for a specific position."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT no_price, yes_price, created_at
+                FROM price_snapshots
+                WHERE market_id = %s
+                ORDER BY created_at
+                """,
+                (market_id,),
+            )
+            return [dict(r) for r in cur.fetchall()]
 
 
 def get_open_positions() -> list[dict]:
