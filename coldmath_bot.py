@@ -1215,6 +1215,20 @@ def create_web_app() -> "FastAPI":
         sigs = _state["signals"]
         if sigs:
             avg_edge = sum(s.get("edge", 0) for s in sigs) / len(sigs)
+        elif _db_available:
+            try:
+                from coldmath_db import get_conn
+
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT AVG(edge) FROM signals WHERE created_at > NOW() - INTERVAL '24 hours'"
+                        )
+                        row = cur.fetchone()
+                        if row and row[0]:
+                            avg_edge = float(row[0])
+            except Exception:
+                pass
 
         next_in = ""
         if _state["bot_running"] and _state["next_scan_at"] > 0:
