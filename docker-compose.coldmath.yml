@@ -7,6 +7,9 @@ services:
     restart: unless-stopped
     ports:
       - "8866:8866"
+    depends_on:
+      coldmath-db:
+        condition: service_healthy
     environment:
       - POLYGON_WALLET_PRIVATE_KEY=${POLYGON_WALLET_PRIVATE_KEY}
       - POLYGON_WALLET_ADDRESS=${POLYGON_WALLET_ADDRESS:-0x842F71005C45Ca1Ea355512EA9F162a00051C363}
@@ -20,8 +23,26 @@ services:
       - BUILDER_KEY=${BUILDER_KEY:-}
       - BUILDER_SECRET=${BUILDER_SECRET:-}
       - BUILDER_PASSPHRASE=${BUILDER_PASSPHRASE:-}
+      - DATABASE_URL=postgresql://coldmath:coldmath@coldmath-db:5432/coldmath
     volumes:
       - coldmath-data:/app/data
 
+  coldmath-db:
+    image: postgres:16-alpine
+    container_name: coldmath-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: coldmath
+      POSTGRES_USER: coldmath
+      POSTGRES_PASSWORD: coldmath
+    volumes:
+      - coldmath-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coldmath"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
 volumes:
   coldmath-data:
+  coldmath-pgdata:

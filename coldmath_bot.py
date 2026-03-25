@@ -48,6 +48,15 @@ from analyzer.weather import (
 from polymarket.api import PolymarketAPI
 from polymarket.models import Market
 
+# PostgreSQL (optional — graceful fallback to JSON-only)
+_db_available = False
+try:
+    import coldmath_db as db
+
+    _db_available = True
+except ImportError:
+    db = None  # type: ignore[assignment]
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -727,6 +736,13 @@ def execute_trades(
         available_cash -= config.trade_size_usd
         traded += 1
 
+        # Save to PostgreSQL
+        if _db_available:
+            try:
+                db.save_position(position)
+            except Exception as e:
+                logger.warning("DB save_position error: %s", e)
+
     save_positions(positions)
     logger.info(
         "Traded: %d new positions | Total: %d | Exposure: $%.2f",
@@ -830,6 +846,13 @@ def check_positions(config: BotConfig) -> None:
             )
             append_history(pos)
             updated = True
+
+            # Update in PostgreSQL
+            if _db_available:
+                try:
+                    db.resolve_position(pos["market_id"], pos["status"], pos["pnl"])
+                except Exception as e:
+                    logger.warning("DB resolve_position error: %s", e)
 
     if updated:
         open_positions = [p for p in positions if p["status"] == "open"]
@@ -1241,6 +1264,16 @@ def create_web_app() -> "FastAPI":
 
     def _run_scan_and_trade() -> int:
         """Shared scan+trade logic. Returns trades_made."""
+        scan_start = time.monotonic()
+        scan_id = None
+
+        # Start scan in DB
+        if _db_available:
+            try:
+                scan_id = db.start_scan()
+            except Exception as e:
+                logger.warning("DB start_scan error: %s", e)
+
         # Quick CLOB reachability check before live trading
         if _state["mode"] == "live":
             import httpx
@@ -1260,11 +1293,45 @@ def create_web_app() -> "FastAPI":
                     return 0
                 logger.info("CLOB direct unreachable, proxy fallback will be used")
 
+        # Get balance before scan
+        balance_before = None
+        if _config.funder_address:
+            try:
+                balance_before = _get_usdc_balance(_config.funder_address)
+            except Exception:
+                pass
+
         results, scan_stats = scan_weather_markets(_config)
         with _state_lock:
             _state["signals"] = _signals_to_dicts(results)
             _state["last_scan"] = datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
             _state["scan_stats"] = scan_stats
+
+        # Save all signals to DB
+        if _db_available and results:
+            try:
+                signal_dicts = [
+                    {
+                        "market_id": r.market.condition_id,
+                        "question": r.market.question,
+                        "city": r.city,
+                        "direction": r.direction,
+                        "threshold": r.threshold,
+                        "target_date": r.target_date,
+                        "temp_type": r.temp_type,
+                        "model_prob_yes": r.model_prob_yes,
+                        "model_prob_no": r.model_prob_no,
+                        "market_price_yes": r.market_price_yes,
+                        "market_price_no": r.market_price_no,
+                        "edge": r.edge,
+                        "ensemble_count": r.ensemble_count,
+                        "action": "signal",
+                    }
+                    for r in results
+                ]
+                db.save_signals_batch(signal_dicts, scan_id=scan_id)
+            except Exception as e:
+                logger.warning("DB save_signals error: %s", e)
 
         trades_made = 0
         if _state["mode"] != "scan":
@@ -1280,6 +1347,30 @@ def create_web_app() -> "FastAPI":
             )
 
         check_positions(_config)
+
+        # Finish scan in DB
+        if _db_available and scan_id:
+            try:
+                balance_after = None
+                if _config.funder_address:
+                    try:
+                        balance_after = _get_usdc_balance(_config.funder_address)
+                    except Exception:
+                        pass
+                db.finish_scan(
+                    scan_id,
+                    weather_markets=scan_stats.get("weather_markets", 0),
+                    forecasts_ok=scan_stats.get("forecasts_ok", 0),
+                    forecasts_failed=scan_stats.get("forecasts_failed", 0),
+                    signals_found=len(results),
+                    trades_made=trades_made,
+                    balance_before=balance_before,
+                    balance_after=balance_after,
+                    status=scan_stats.get("status", "ok"),
+                    duration_sec=round(time.monotonic() - scan_start, 1),
+                )
+            except Exception as e:
+                logger.warning("DB finish_scan error: %s", e)
 
         # Auto-redeem resolved positions
         if _state["mode"] == "live":
@@ -1566,10 +1657,48 @@ def create_web_app() -> "FastAPI":
 
         return await asyncio.to_thread(_do_check)
 
+    @app.get("/api/analytics")
+    async def api_analytics(_user: str = Depends(verify_auth)):
+        if not _db_available:
+            return {"error": "PostgreSQL not available"}
+
+        def _do():
+            try:
+                return db.get_analytics()
+            except Exception as e:
+                logger.error("Analytics error: %s", e)
+                return {"error": str(e)}
+
+        return await asyncio.to_thread(_do)
+
+    @app.post("/api/db/migrate")
+    async def api_db_migrate(_user: str = Depends(verify_auth)):
+        if not _db_available:
+            return {"error": "PostgreSQL not available"}
+
+        def _do():
+            return db.migrate_from_json(str(POSITIONS_FILE), str(HISTORY_FILE))
+
+        result = await asyncio.to_thread(_do)
+        return {"status": "ok", "imported": result}
+
     @app.on_event("startup")
     async def _autostart_bot():
         nonlocal _ws_loop
         _ws_loop = asyncio.get_running_loop()
+
+        # Initialize PostgreSQL
+        if _db_available:
+            try:
+                db.init_db()
+                logger.info("PostgreSQL connected and initialized")
+                # Auto-migrate existing JSON data on first run
+                await asyncio.to_thread(
+                    db.migrate_from_json, str(POSITIONS_FILE), str(HISTORY_FILE)
+                )
+            except Exception as e:
+                logger.warning("PostgreSQL unavailable, using JSON only: %s", e)
+
         # Check proxy on startup
         if _config.proxy_url:
 

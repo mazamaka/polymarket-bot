@@ -8,3 +8,4 @@ python-multipart>=0.0.18
 websockets>=14.0
 py-clob-client
 poly-web3
+psycopg2-binary>=2.9.0

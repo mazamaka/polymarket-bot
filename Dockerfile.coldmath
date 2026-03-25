@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # App code
 COPY coldmath_bot.py .
+COPY coldmath_db.py .
 COPY config.py .
 COPY analyzer/ analyzer/
 COPY polymarket/ polymarket/
