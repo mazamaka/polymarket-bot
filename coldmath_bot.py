@@ -308,6 +308,19 @@ class BotConfig:
         }
     )
 
+    # Edge scaling — мин. edge растёт с дистанцией до резолюции
+    # Чем дальше дата, тем менее точен прогноз → требуем больший edge
+    edge_scaling: dict = field(
+        default_factory=lambda: {
+            0: 0.03,  # сегодня/завтра — 3%
+            1: 0.03,  # 1 день — 3%
+            2: 0.05,  # 2 дня — 5%
+            3: 0.08,  # 3 дня — 8%
+            4: 0.12,  # 4 дня — 12%
+            5: 0.15,  # 5 дней — 15%
+        }
+    )
+
     # CLOB API
     clob_host: str = "https://clob.polymarket.com"
     chain_id: int = 137
@@ -545,6 +558,20 @@ def scan_weather_markets(config: BotConfig) -> tuple[list[ScanResult], dict]:
 
             # Filter: NO price in acceptable range
             if market_no < config.min_no_price or market_no > config.max_no_price:
+                continue
+
+            # Edge scaling — require higher edge for further dates
+            min_edge = config.edge_scaling.get(
+                days_ahead, max(config.edge_scaling.values())
+            )
+            if edge < min_edge:
+                logger.debug(
+                    "Edge scaling skip: %s %dd edge=%.1f%% < min=%.1f%%",
+                    info.city,
+                    days_ahead,
+                    edge * 100,
+                    min_edge * 100,
+                )
                 continue
 
             results.append(
