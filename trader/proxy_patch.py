@@ -32,6 +32,23 @@ _HEADERS_BASE = {
 
 # Track which mode is working to avoid unnecessary retries
 _direct_ok = True  # optimistic start
+_proxy_url_template: str = ""
+
+
+def _reconnect_proxy() -> None:
+    """Recreate proxy client with a fresh session ID (fixes stale SSL)."""
+    global _proxy_client, _proxy_url
+    if not _proxy_url_template:
+        return
+    try:
+        if _proxy_client is not None:
+            _proxy_client.close()
+    except Exception:
+        pass
+    session_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    _proxy_url = _proxy_url_template.replace("{session}", f"bot{session_id}")
+    _proxy_client = httpx.Client(proxy=_proxy_url, timeout=30)
+    logger.info("Proxy reconnected with new session: %s", _proxy_url.split("@")[-1])
 
 
 def apply_proxy(proxy_url_template: str) -> None:
@@ -44,7 +61,15 @@ def apply_proxy(proxy_url_template: str) -> None:
     Args:
         proxy_url_template: URL with {session} placeholder for sticky sessions.
     """
-    global _direct_client, _proxy_client, _proxy_url, _orig_session, _direct_ok
+    global \
+        _direct_client, \
+        _proxy_client, \
+        _proxy_url, \
+        _orig_session, \
+        _direct_ok, \
+        _proxy_url_template
+
+    _proxy_url_template = proxy_url_template
 
     # Close previous proxy client if re-patching
     if _proxy_client is not None:
@@ -143,6 +168,9 @@ def apply_proxy(proxy_url_template: str) -> None:
                     )
                     _direct_ok = label != "direct"
                     continue
+                # SSL error on proxy — recreate proxy client with new session
+                if label == "proxy" and "ssl" in str(e).lower():
+                    _reconnect_proxy()
                 raise PolyApiException(error_msg=str(e))
 
         if last_error:
