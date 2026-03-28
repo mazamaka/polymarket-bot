@@ -290,7 +290,7 @@ class BotConfig:
     min_days_ahead: int = 0  # мин. дней до резолюции
 
     # Stop-loss
-    stop_loss_pct: float = 0.30  # закрыть если NO упал на 30% от entry
+    stop_loss_pct: float = 0.50  # закрыть если NO упал на 50% от entry (данные: <50% восстанавливаются, >50% нет)
     stop_loss_slippage: float = 0.03  # 3% скидка от bid для гарантии исполнения
 
     # Edge thresholds — когда покупать NO
@@ -530,14 +530,18 @@ class ScanResult:
     days_ahead: int = 0
 
 
-def scan_weather_markets(config: BotConfig) -> tuple[list[ScanResult], dict]:
+def scan_weather_markets(
+    config: BotConfig,
+) -> tuple[list[ScanResult], dict, list[dict]]:
     """Сканировать Polymarket на weather маркеты с edge для NO.
 
     Returns:
-        Tuple of (results, scan_stats).
+        Tuple of (results, scan_stats, skipped_signals).
+        skipped_signals — рынки прошедшие forecast но не прошедшие фильтры (для backtest).
     """
     api = PolymarketAPI()
     results: list[ScanResult] = []
+    skipped: list[dict] = []
     forecast_failed = 0
 
     try:
@@ -596,13 +600,47 @@ def scan_weather_markets(config: BotConfig) -> tuple[list[ScanResult], dict]:
             # Edge for NO side
             edge = prob_no - market_no
 
+            # Build base signal dict for skipped tracking
+            _base = {
+                "market_id": m.condition_id,
+                "question": m.question,
+                "city": info.city,
+                "direction": info.direction,
+                "threshold": info.threshold,
+                "threshold_high": getattr(info, "threshold_high", None),
+                "target_date": info.target_date.strftime("%Y-%m-%d"),
+                "temp_type": info.temp_type,
+                "model_prob_yes": prob_yes,
+                "model_prob_no": prob_no,
+                "market_price_yes": market_yes,
+                "market_price_no": market_no,
+                "edge": edge,
+                "ensemble_count": len(temps),
+                "ensemble_temps": temps,
+                "days_ahead": days_ahead,
+            }
+
             # Filter: only markets where model strongly says NO
             min_prob = config.direction_min_no_prob.get(info.direction, 0.85)
             if prob_no < min_prob:
+                skipped.append(
+                    {
+                        **_base,
+                        "action": "skip",
+                        "skip_reason": f"low_prob_no:{prob_no:.3f}<{min_prob}",
+                    }
+                )
                 continue
 
             # Filter: NO price in acceptable range
             if market_no < config.min_no_price or market_no > config.max_no_price:
+                skipped.append(
+                    {
+                        **_base,
+                        "action": "skip",
+                        "skip_reason": f"no_price_range:{market_no:.3f}",
+                    }
+                )
                 continue
 
             # Edge scaling — require higher edge for further dates
@@ -610,6 +648,13 @@ def scan_weather_markets(config: BotConfig) -> tuple[list[ScanResult], dict]:
                 days_ahead, max(config.edge_scaling.values())
             )
             if edge < min_edge:
+                skipped.append(
+                    {
+                        **_base,
+                        "action": "skip",
+                        "skip_reason": f"edge_too_low:{edge:.3f}<{min_edge:.3f}",
+                    }
+                )
                 logger.debug(
                     "Edge scaling skip: %s %dd edge=%.1f%% < min=%.1f%%",
                     info.city,
@@ -656,11 +701,12 @@ def scan_weather_markets(config: BotConfig) -> tuple[list[ScanResult], dict]:
         "forecasts_ok": scanned,
         "forecasts_failed": forecast_failed,
         "signals": len(results),
+        "skipped": len(skipped),
         "status": "ok"
         if forecast_failed == 0
         else ("degraded" if scanned > 0 else "error"),
     }
-    return results, stats
+    return results, stats, skipped
 
 
 # ── Display ─────────────────────────────────────────────────────────────────
@@ -1431,14 +1477,14 @@ def create_web_app() -> "FastAPI":
             except Exception:
                 pass
 
-        results, scan_stats = scan_weather_markets(_config)
+        results, scan_stats, skipped_signals = scan_weather_markets(_config)
         with _state_lock:
             _state["signals"] = _signals_to_dicts(results)
             _state["last_scan"] = datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
             _state["scan_stats"] = scan_stats
 
-        # Save all signals to DB
-        if _db_available and results:
+        # Save all signals to DB (passed + skipped for backtest)
+        if _db_available:
             try:
                 signal_dicts = [
                     {
@@ -1461,7 +1507,10 @@ def create_web_app() -> "FastAPI":
                     }
                     for r in results
                 ]
-                db.save_signals_batch(signal_dicts, scan_id=scan_id)
+                # Include skipped signals for backtesting
+                all_signals = signal_dicts + skipped_signals
+                if all_signals:
+                    db.save_signals_batch(all_signals, scan_id=scan_id)
             except Exception as e:
                 logger.warning("DB save_signals error: %s", e)
 
@@ -2068,7 +2117,7 @@ def main() -> None:
         check_positions(config)
 
         # Scan for new opportunities
-        results, _stats = scan_weather_markets(config)
+        results, _stats, _skipped = scan_weather_markets(config)
         print_scan_results(results)
 
         if args.mode != "scan":
