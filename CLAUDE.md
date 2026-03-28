@@ -185,28 +185,63 @@ SSEListener(on_breaking_match=callback, on_log=logger)
 - Auto-migration из JSON при старте
 - API: `/api/analytics`, `/api/db/migrate`
 
+### Стратегия (оптимизирована 2026-03-28 на 92 реальных сделках)
+
+**Принцип**: exactly all days + between only 0-1d, $5 per trade
+
+Backtest на реальных данных показал:
+- `exactly` WR 97.6%, единственный стабильно прибыльный direction
+- `between` прибыльный только на 0-1 день (WR 90%, но 2d+ убыточный -$2.13)
+- `above`/`below` отключены (WR 80%, убыточные)
+- Take-profit НЕ нужен — NO резолвится на $1.00 автоматически
+
+| Стратегия | Сделок | WR | ROI | Net P&L |
+|-----------|--------|------|------|---------|
+| Old (ex+btw $2) | 82 | 93.9% | +0.68% | +$1.12 |
+| **New (ex+btw0-1d $5)** | **52** | **96.2%** | **+3.12%** | **+$8.12** |
+
 ### Risk Management (ColdMath)
 
 | Параметр | Значение | Описание |
 |----------|----------|----------|
-| `trade_size_usd` | $2.00 | Размер одной ставки |
+| `trade_size_usd` | $5.00 | Размер одной ставки |
+| `max_positions` | 20 | Макс одновременных позиций |
+| `max_total_exposure` | $100 | Макс $ во всех позициях |
 | `min_no_price` | 0.90 | Мин. цена NO |
 | `max_no_price` | 0.995 | Макс. цена NO |
-| `stop_loss_pct` | 50% | Stop-loss при drawdown (sell NO через CLOB) |
+| `stop_loss_pct` | 40% | Stop-loss при drawdown (sell NO через CLOB) |
 | `stop_loss_slippage` | 3% | Скидка от bid для гарантии исполнения |
 | `min_model_prob_no` | 85% | Мин. вероятность NO по ensemble |
+| `allowed_directions` | exactly, between | Разрешённые directions |
+| `short_only_directions` | between | Только на 0-1 день |
+| `max_positions_per_city` | 3 | Региональная диверсификация |
+
+### Stop-loss: 40% (оптимизировано по данным)
+
+Анализ 120 позиций с price snapshots:
+- 0-30% drawdown: 100% восстанавливаются
+- 30-40% drawdown: 60% восстанавливаются (risk/reward не оправдан)
+- 50%+ drawdown: 0% восстанавливаются (точка невозврата)
 
 ### Edge Scaling
 
 Мин. edge растёт с дистанцией до резолюции:
 
-| Days ahead | Min edge | Пример |
-|-----------|----------|--------|
-| 0-1 день | 3% | Прогноз точный, берём почти всё |
-| 2 дня | 5% | |
-| 3 дня | 8% | Chicago 68°F (1.5%) — отфильтрован |
-| 4 дня | 12% | Только жирные сигналы |
-| 5 дней | 15% | Почти ничего не пройдёт |
+| Days ahead | Min edge | Описание |
+|-----------|----------|----------|
+| 0-1 день | 5% | Прогноз точный |
+| 2 дня | 7% | |
+| 3 дня | 10% | Средняя точность |
+| 4 дня | 14% | Только жирные сигналы |
+| 5 дней | 18% | Почти ничего не пройдёт |
+
+### Сбор данных для backtest
+
+Signals table хранит ВСЕ рассмотренные рынки (включая отфильтрованные):
+- `action="signal"` — прошёл фильтры
+- `action="skip"` + `skip_reason` — отфильтрован (low_prob_no, edge_too_low, no_price_range)
+- `ensemble_temps` (JSONB) — все 139+ members для пересчёта probability
+- `price_snapshots` — каждые 30 мин для анализа volatility и stop-loss оптимизации
 
 ### Auto-Redeem (poly-web3)
 
@@ -229,18 +264,19 @@ Modern dark/light theme с animated background:
 
 - `BotConfig` — все настройки (trade size, edge scaling, stop-loss, proxy)
 - `ClobTrader` — CLOB API wrapper (buy_no, sell_no, get_best_bid/ask)
-- `scan_weather_markets()` → `ScanResult` с ensemble_temps, days_ahead
-- `execute_trades()` — открытие позиций с dedup по conditionId
+- `scan_weather_markets()` → `(results, stats, skipped)` с ensemble_temps, days_ahead
+- `execute_trades()` — открытие позиций с dedup по conditionId + city limit
 - `check_positions()` — резолв через Data API (redeemable check)
-- `_run_scan_and_trade()` — единый цикл: scan → signals to DB → trade → check → snapshots → stop-loss → redeem
-- Stop-loss: sell NO при drawdown ≥50% (best_bid * 0.97)
-- Price snapshots: каждые 30 мин снимок цен всех открытых позиций для backtest
+- `_run_scan_and_trade()` — единый цикл: scan → signals+skipped to DB → trade → check → snapshots → stop-loss → redeem
+- Stop-loss: sell NO при drawdown ≥40% (best_bid * 0.97)
+- Price snapshots: каждые 30 мин снимок цен всех открытых позиций
+- Proxy auto-reconnect: при SSL ошибке пересоздаёт proxy client с новой сессией
 
 ### Wallet
 
 - Address: `0x842F71005C45Ca1Ea355512EA9F162a00051C363`
 - Proxy: MangoProxy CA (Vancouver/Beauceville)
-- Balance: ~$35 USDC (as of 2026-03-25)
+- Balance: ~$39 USDC (as of 2026-03-28)
 
 ## Деплой
 
