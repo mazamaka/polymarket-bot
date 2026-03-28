@@ -280,9 +280,9 @@ class BotConfig:
     """Конфигурация бота."""
 
     # Trading
-    trade_size_usd: float = 3.0  # $ на позицию
-    max_positions: int = 10  # макс одновременных позиций
-    max_total_exposure: float = 50.0  # макс $ во всех позициях
+    trade_size_usd: float = 2.0  # $ на позицию
+    max_positions: int = 30  # макс одновременных позиций
+    max_total_exposure: float = 60.0  # макс $ во всех позициях (≈1.5x баланса)
 
     # Market selection
     min_liquidity: float = 50.0  # мин. ликвидность рынка
@@ -290,7 +290,7 @@ class BotConfig:
     min_days_ahead: int = 0  # мин. дней до резолюции
 
     # Stop-loss
-    stop_loss_pct: float = 0.50  # закрыть если NO упал на 50% от entry
+    stop_loss_pct: float = 0.30  # закрыть если NO упал на 30% от entry
     stop_loss_slippage: float = 0.03  # 3% скидка от bid для гарантии исполнения
 
     # Edge thresholds — когда покупать NO
@@ -312,16 +312,22 @@ class BotConfig:
         }
     )
 
+    # Allowed directions — only profitable ones
+    allowed_directions: list = field(default_factory=lambda: ["exactly", "between"])
+
+    # Max positions per city — regional diversification
+    max_positions_per_city: int = 3
+
     # Edge scaling — мин. edge растёт с дистанцией до резолюции
     # Чем дальше дата, тем менее точен прогноз → требуем больший edge
     edge_scaling: dict = field(
         default_factory=lambda: {
-            0: 0.03,  # сегодня/завтра — 3%
-            1: 0.03,  # 1 день — 3%
-            2: 0.05,  # 2 дня — 5%
-            3: 0.08,  # 3 дня — 8%
-            4: 0.12,  # 4 дня — 12%
-            5: 0.15,  # 5 дней — 15%
+            0: 0.05,  # сегодня/завтра — 5%
+            1: 0.05,  # 1 день — 5%
+            2: 0.07,  # 2 дня — 7%
+            3: 0.10,  # 3 дня — 10%
+            4: 0.14,  # 4 дня — 14%
+            5: 0.18,  # 5 дней — 18%
         }
     )
 
@@ -552,6 +558,10 @@ def scan_weather_markets(config: BotConfig) -> tuple[list[ScanResult], dict]:
             if not info:
                 continue
 
+            # Filter by allowed directions
+            if info.direction not in config.allowed_directions:
+                continue
+
             weather_found += 1
             days_ahead = (info.target_date - now).days
             if days_ahead < config.min_days_ahead or days_ahead > config.max_days_ahead:
@@ -719,6 +729,13 @@ def execute_trades(
 
     current_exposure = sum(p["size_usd"] for p in positions)
 
+    # Count positions per city for regional diversification
+    city_counts: dict[str, int] = {}
+    for p in positions:
+        c = p.get("city", "")
+        if c:
+            city_counts[c] = city_counts.get(c, 0) + 1
+
     traded = 0
 
     # Check live balance before trading (on-chain USDC)
@@ -755,6 +772,15 @@ def execute_trades(
         if available_cash < config.trade_size_usd:
             logger.info("Insufficient cash ($%.2f), stopping", available_cash)
             break
+
+        # Regional diversification — max N positions per city
+        if city_counts.get(r.city, 0) >= config.max_positions_per_city:
+            logger.debug(
+                "City limit skip: %s already has %d positions",
+                r.city,
+                city_counts[r.city],
+            )
+            continue
 
         # Determine actual price — use market NO price
         buy_price = r.market_price_no
@@ -815,6 +841,7 @@ def execute_trades(
         existing_markets.add(r.market.condition_id)
         current_exposure += config.trade_size_usd
         available_cash -= config.trade_size_usd
+        city_counts[r.city] = city_counts.get(r.city, 0) + 1
         traded += 1
 
         # Save to PostgreSQL
@@ -1158,8 +1185,8 @@ def create_web_app() -> "FastAPI":
 
     _config = BotConfig(
         trade_size_usd=float(os.environ.get("TRADE_SIZE", "2.0")),
-        max_positions=int(os.environ.get("MAX_POSITIONS", "10")),
-        max_total_exposure=float(os.environ.get("MAX_EXPOSURE", "50.0")),
+        max_positions=int(os.environ.get("MAX_POSITIONS", "30")),
+        max_total_exposure=float(os.environ.get("MAX_EXPOSURE", "60.0")),
         max_days_ahead=int(os.environ.get("MAX_DAYS", "5")),
         private_key=os.environ.get("POLYGON_WALLET_PRIVATE_KEY", ""),
         funder_address=os.environ.get("POLYGON_WALLET_ADDRESS", ""),
@@ -1174,6 +1201,8 @@ def create_web_app() -> "FastAPI":
         min_no_price: float | None = Field(None, ge=0.5, le=0.999)
         min_ensemble_members: int | None = Field(None, ge=3, le=200)
         scan_interval_min: int | None = Field(None, ge=5, le=120)
+        stop_loss_pct: float | None = Field(None, ge=0.1, le=0.9)
+        max_positions_per_city: int | None = Field(None, ge=1, le=20)
         mode: str | None = Field(None, pattern="^(scan|paper|live)$")
 
     @app.get("/", response_class=HTMLResponse)
@@ -1355,6 +1384,9 @@ def create_web_app() -> "FastAPI":
                 "min_no_price": _config.min_no_price,
                 "min_ensemble_members": _config.min_ensemble_members,
                 "scan_interval_min": _state["scan_interval_min"],
+                "stop_loss_pct": _config.stop_loss_pct,
+                "max_positions_per_city": _config.max_positions_per_city,
+                "allowed_directions": _config.allowed_directions,
                 "mode": _state["mode"],
                 "proxy_url": _config.proxy_url,
             },
@@ -1758,6 +1790,10 @@ def create_web_app() -> "FastAPI":
                 _config.min_ensemble_members = body.min_ensemble_members
             if body.scan_interval_min is not None:
                 _state["scan_interval_min"] = body.scan_interval_min
+            if body.stop_loss_pct is not None:
+                _config.stop_loss_pct = body.stop_loss_pct
+            if body.max_positions_per_city is not None:
+                _config.max_positions_per_city = body.max_positions_per_city
             if body.mode is not None:
                 _state["mode"] = body.mode
         return {"status": "ok"}
