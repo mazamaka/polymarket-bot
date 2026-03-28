@@ -280,9 +280,9 @@ class BotConfig:
     """Конфигурация бота."""
 
     # Trading
-    trade_size_usd: float = 2.0  # $ на позицию
-    max_positions: int = 30  # макс одновременных позиций
-    max_total_exposure: float = 60.0  # макс $ во всех позициях (≈1.5x баланса)
+    trade_size_usd: float = 5.0  # $ на позицию (backtest: $5 optimal for $38 balance)
+    max_positions: int = 20  # макс одновременных позиций
+    max_total_exposure: float = 100.0  # макс $ во всех позициях
 
     # Market selection
     min_liquidity: float = 50.0  # мин. ликвидность рынка
@@ -290,7 +290,7 @@ class BotConfig:
     min_days_ahead: int = 0  # мин. дней до резолюции
 
     # Stop-loss
-    stop_loss_pct: float = 0.50  # закрыть если NO упал на 50% от entry (данные: <50% восстанавливаются, >50% нет)
+    stop_loss_pct: float = 0.40  # закрыть если NO упал на 40% от entry (данные: 30-40% зона риска, >50% невозврат)
     stop_loss_slippage: float = 0.03  # 3% скидка от bid для гарантии исполнения
 
     # Edge thresholds — когда покупать NO
@@ -314,6 +314,8 @@ class BotConfig:
 
     # Allowed directions — only profitable ones
     allowed_directions: list = field(default_factory=lambda: ["exactly", "between"])
+    # Directions allowed only for 0-1 day ahead (between unprofitable at 2d+)
+    short_only_directions: list = field(default_factory=lambda: ["between"])
 
     # Max positions per city — regional diversification
     max_positions_per_city: int = 3
@@ -569,6 +571,10 @@ def scan_weather_markets(
             weather_found += 1
             days_ahead = (info.target_date - now).days
             if days_ahead < config.min_days_ahead or days_ahead > config.max_days_ahead:
+                continue
+
+            # Short-only directions: between only allowed for 0-1 day
+            if info.direction in config.short_only_directions and days_ahead > 1:
                 continue
 
             # Ensure we have NO token ID
@@ -1230,9 +1236,9 @@ def create_web_app() -> "FastAPI":
     }
 
     _config = BotConfig(
-        trade_size_usd=float(os.environ.get("TRADE_SIZE", "2.0")),
-        max_positions=int(os.environ.get("MAX_POSITIONS", "30")),
-        max_total_exposure=float(os.environ.get("MAX_EXPOSURE", "60.0")),
+        trade_size_usd=float(os.environ.get("TRADE_SIZE", "5.0")),
+        max_positions=int(os.environ.get("MAX_POSITIONS", "20")),
+        max_total_exposure=float(os.environ.get("MAX_EXPOSURE", "100.0")),
         max_days_ahead=int(os.environ.get("MAX_DAYS", "5")),
         private_key=os.environ.get("POLYGON_WALLET_PRIVATE_KEY", ""),
         funder_address=os.environ.get("POLYGON_WALLET_ADDRESS", ""),
